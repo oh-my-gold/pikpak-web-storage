@@ -21,10 +21,7 @@ final class PikPakWebStorageServiceProvider extends ServiceProvider
                 throw new InvalidArgumentException('A PikPak Bearer token is required for this disk.');
             }
 
-            $client = new PikPakApiClient(
-                $token,
-                isset($config['device_id']) ? (string) $config['device_id'] : null,
-            );
+            $client = new PikPakApiClient($token);
             $adapter = new PikPakFilesystemAdapter(
                 $client,
                 (string) ($config['root_folder_id'] ?? ''),

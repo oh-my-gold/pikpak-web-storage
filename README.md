@@ -11,22 +11,15 @@ The package registers the `pikpak` driver through Laravel package auto-discovery
 - Flysystem 3
 - A PikPak Bearer token with permissions for the operations the application uses
 
-## Install from this repository
+## Install
 
-Until a tagged release is published, add the repository and package to the consuming application's composer.json:
+Install the Packagist package with Composer:
 
-```json
-{
-  "repositories": [
-    { "type": "vcs", "url": "https://github.com/oh-my-gold/pikpak-web-storage" }
-  ],
-  "require": {
-    "oh-my-gold/pikpak-web-storage": "dev-master"
-  }
-}
+```sh
+composer require oh-my-gold/pikpak-web-storage:dev-master
 ```
 
-Then run `composer update oh-my-gold/pikpak-web-storage`. Laravel discovers `PikPakWebStorageServiceProvider` automatically. If package discovery is disabled, add `OhMyGold\PikPakWebStorage\PikPakWebStorageServiceProvider::class` to the application's providers list.
+Laravel discovers `PikPakWebStorageServiceProvider` automatically. If package discovery is disabled, add `OhMyGold\PikPakWebStorage\PikPakWebStorageServiceProvider::class` to the application's providers list.
 
 ## Configure a disk
 
@@ -37,7 +30,6 @@ Add a disk to `config/filesystems.php`:
     'pikpak' => [
         'driver' => 'pikpak',
         'token' => env('PIKPAK_TOKEN'),
-        'device_id' => env('PIKPAK_DEVICE_ID'),
         'root_folder_id' => env('PIKPAK_ROOT_FOLDER_ID', ''),
         'path_prefix' => env('PIKPAK_PATH_PREFIX', ''),
         'throw' => true,
@@ -61,7 +53,7 @@ $stream = $disk->readStream('photos/example.txt');
 fclose($stream);
 ```
 
-The driver implements Flysystem 3 file and directory existence, reads and streams, writes and streams, listings, directory creation, move/copy, file metadata, and deletion. Listing requests follow every page and reject repeated page tokens. Same-name files of the requested kind are treated as ambiguous; the adapter fails instead of picking one.
+The driver implements the Flysystem 3 `FilesystemAdapter` operations: file and directory existence, reads and streams, writes and streams, listings, directory creation, move/copy, file metadata, visibility, and deletion. Laravel's `Storage::url()` uses the current PikPak content link. Flysystem checksum calls use its standard stream-based fallback. Listing requests follow every page and reject repeated page tokens. Same-name files of the requested kind are treated as ambiguous; the adapter fails instead of picking one.
 
 The adapter accepts `@id/{file-id}` for direct detail/read/delete operations when a path name is ambiguous or a stable file ID is already known.
 
@@ -85,8 +77,9 @@ Additional methods are `pathIsUniqueTo($path, $id)`, `deleteById($id)`, and `las
 - Reads use the current PikPak content link and return a stream for `readStream()`.
 - `delete()` and `deleteDirectory()` move targets to PikPak trash through `files:batchTrash`; they do not permanently erase data. Deleting the configured root folder moves that folder to trash. Deleting the account root fails because it has no remote object ID.
 - `copy()` uses the PikPak batch-copy operation. If the destination name differs, the package renames the copied object after resolving its new ID; if the API does not return an ID and the new copy cannot be uniquely identified, the operation raises an exception.
-- PikPak's current Drive API does not expose file visibility changes. `visibility()` reports private and `setVisibility()` accepts the Flysystem values without changing remote ACLs.
+- PikPak's current Drive API does not expose file visibility changes. `visibility()` reports private; requesting public visibility fails with a Flysystem exception instead of silently claiming success.
+- PikPak does not expose a way to request a content URL with a caller-selected expiration time. The package therefore does not provide `temporaryUrl()` itself; Laravel applications can install a `buildTemporaryUrlsUsing()` callback if they have a separate URL service.
 - The Drive API and temporary OSS upload protocol used here are based on the project's current integration behavior and are not a stable public PikPak developer contract. API changes may require a package update.
 - The package does not implement refresh-token authentication, captcha handling, account management, sharing, or permanent deletion.
 
-The consuming application must protect its token and choose permissions appropriate to its read, upload, move, copy, and trash operations. Authentication failures stop with an exception; the package does not retry with another account or credential source.
+The package uses a bearer token and an optional root folder ID; it has no device ID setting. Its independent test suite runs with Laravel Testbench. The consuming application must protect its token and choose permissions appropriate to its read, upload, move, copy, and trash operations. Authentication failures stop with an exception; the package does not retry with another account or credential source.

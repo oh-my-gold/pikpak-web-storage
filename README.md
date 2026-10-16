@@ -85,10 +85,13 @@ Additional methods are `pathIsUniqueTo($path, $id)`, `deleteById($id)`, `lastUpl
 
 `getPresignedUploadUrl()` takes the `resumable.params` from an upload session that your application has already created and returns one signed PUT URL as a string. It does not create a PikPak file or upload session. The URL expires after 15 minutes by default; pass a value from 1 to 3600 seconds to choose another lifetime.
 
-UShow can keep its current flow for creating the session and tracking `fileId` and `sessionId`, then obtain the browser URL on the backend. Install this package in UShow and configure its Laravel driver; if UShow's existing `pikpak` disk uses its own adapter, give this package a separate disk name such as `pikpak-url-signer`:
+UShow can keep its current flow for creating the session and tracking `fileId` and `sessionId`, then obtain the browser URL on the backend. Install this package in UShow. If UShow already registers its own `pikpak` Laravel driver, instantiate this package's adapter directly so the two drivers do not compete for the same driver name:
 
 ```php
-$adapter = Storage::disk('pikpak-url-signer')->getAdapter();
+use OhMyGold\PikPakWebStorage\Flysystem\PikPakFilesystemAdapter;
+use OhMyGold\PikPakWebStorage\Http\PikPakApiClient;
+
+$adapter = new PikPakFilesystemAdapter(new PikPakApiClient($pikpakToken, $deviceId));
 $uploadParams = $metadata['resumable']['params']; // From UShow's existing UPLOAD_TYPE_RESUMABLE request.
 $uploadUrl = $adapter->getPresignedUploadUrl($uploadParams);
 
@@ -102,14 +105,18 @@ return response()->json([
 The frontend sends the file bytes directly to the URL with a PUT request and the same content type used for signing:
 
 ```javascript
-await fetch(uploadUrl, {
+const response = await fetch(uploadUrl, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/octet-stream' },
     body: file,
 });
+
+if (!response.ok) {
+    throw new Error(`PikPak upload failed (HTTP ${response.status})`);
+}
 ```
 
-The PikPak OSS endpoint must allow browser CORS requests from the UShow origin for `PUT` and the `Content-Type` header. This helper signs one PUT; it does not provide multipart or chunked upload URLs. Treat the signed URL as temporary authorization: do not log it or store it beyond the upload flow.
+Only continue UShow's upload-completion flow after the PUT response succeeds. The PikPak OSS endpoint must allow browser CORS requests from the UShow origin for `PUT` and the `Content-Type` header. This helper signs one PUT; it does not provide multipart or chunked upload URLs. Treat the signed URL as temporary authorization: do not log it or store it beyond the upload flow.
 
 ### Create a share link
 

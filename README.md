@@ -11,22 +11,15 @@ The package registers the `pikpak` driver through Laravel package auto-discovery
 - Flysystem 3
 - A PikPak Bearer token with permissions for the operations the application uses
 
-## Install from this repository
+## Install
 
-Until a tagged release is published, add the repository and package to the consuming application's composer.json:
+Install the Packagist package with Composer:
 
-```json
-{
-  "repositories": [
-    { "type": "vcs", "url": "https://github.com/oh-my-gold/pikpak-web-storage" }
-  ],
-  "require": {
-    "oh-my-gold/pikpak-web-storage": "dev-master"
-  }
-}
+```sh
+composer require oh-my-gold/pikpak-web-storage:dev-master
 ```
 
-Then run `composer update oh-my-gold/pikpak-web-storage`. Laravel discovers `PikPakWebStorageServiceProvider` automatically. If package discovery is disabled, add `OhMyGold\PikPakWebStorage\PikPakWebStorageServiceProvider::class` to the application's providers list.
+Laravel discovers `PikPakWebStorageServiceProvider` automatically. If package discovery is disabled, add `OhMyGold\PikPakWebStorage\PikPakWebStorageServiceProvider::class` to the application's providers list.
 
 ## Configure a disk
 
@@ -37,7 +30,6 @@ Add a disk to `config/filesystems.php`:
     'pikpak' => [
         'driver' => 'pikpak',
         'token' => env('PIKPAK_TOKEN'),
-        'device_id' => env('PIKPAK_DEVICE_ID'),
         'root_folder_path' => env('PIKPAK_ROOT_FOLDER_PATH', ''),
         'path_prefix' => env('PIKPAK_PATH_PREFIX', ''),
         'throw' => true,
@@ -45,13 +37,11 @@ Add a disk to `config/filesystems.php`:
 ],
 ```
 
-Store `PIKPAK_TOKEN` in the application's secret manager or environment, and keep it out of source control. Set `PIKPAK_ROOT_FOLDER_PATH=/备份/项目` to use that directory as the disk root. An empty path or `/` selects the account root. Users do not need to look up folder IDs. Paths are resolved lazily through PikPak's folder listing API, using folder-only filters, pages of 500, and exact name matching. Reads fail when the configured path is missing; writes and directory creation create missing directories.
+Store `PIKPAK_TOKEN` in the application’s secret manager or environment, and keep it out of source control. Set `PIKPAK_ROOT_FOLDER_PATH=/备份/项目` to use that folder as the disk root. An empty path or `/` selects the account root. The driver resolves the path to PikPak folder IDs lazily, one level at a time, with folder-only filters and pages of 500. Users do not need to look up IDs. Reads fail when the configured path is missing; writes and directory creation create missing folders.
 
-The driver automatically uses Laravel's default cache store when available, otherwise it uses memory for the current adapter instance. Cache store initialization, read, or write failures also fall back to memory. Optional disk settings are `folder_cache_store` (a Laravel cache store name) and `folder_cache_ttl` (a positive number of seconds, default `3600`). Only successful folder lookups are cached. Cache keys are isolated by a hash of the supplied credential and the parent ID/name; token rotation starts a new cache namespace. Resolving an already cached path requires no PikPak API requests, and cached parents are reused for new child paths.
+The driver uses Laravel’s default cache store when available and falls back to adapter-instance memory if the store cannot be initialized or accessed. Optional disk settings are `folder_cache_store` (a Laravel cache store name) and `folder_cache_ttl` (a positive number of seconds, default `3600`). Cache entries contain successful folder lookups, are isolated by a hash of the bearer token, and expire after the configured TTL. Deleting a directory or calling `deleteById()` invalidates cached folder mappings, including descendants. External folder changes become visible after expiry; clear the selected cache store to refresh sooner. Same-name folders are checked across every result page and raise an error when ambiguous.
 
-Deleting a directory or using `deleteById()` invalidates the shared folder cache namespace, including cached descendants. External renames, moves, or deletions become visible after cache expiry; clear the selected cache store to refresh them earlier. Without a cache service, entries last for the adapter instance. Same-name folders are checked across every page before caching, so an ambiguous directory raises an error.
-
-For compatibility, `root_folder_id` is still accepted as an optional starting folder ID (`''` and `root` mean the account root). If both options are present, `root_folder_path` is resolved relative to that starting ID.
+For compatibility, `root_folder_id` remains an optional starting folder ID (`''` or `root` means account root). If both root options are configured, `root_folder_path` is resolved under that starting ID.
 
 `path_prefix` preserves a visible leading prefix in paths returned from a root listing. When an input begins with that exact prefix, it is removed before remote lookup. Inputs without it are still relative to the configured disk root, so `path_prefix` is not an access-control boundary.
 
@@ -96,6 +86,7 @@ All ordinary paths below are relative to `root_folder_path`. For example, with `
 | `$disk->readStream('photos/a.txt')` | `resource` | Open a readable content stream; caller closes it. |
 | `$disk->download('photos/a.txt', 'download.txt')` | `StreamedResponse` | Return a download response from a Laravel controller. |
 | `$disk->response('photos/a.txt', 'preview.txt')` | `StreamedResponse` | Return an inline response from a Laravel controller. |
+| `$disk->url('photos/a.txt')` | `string` | PikPak's current content URL; its expiry is chosen by PikPak. |
 
 Writes create a new remote file and upload session. They do not replace an existing same-name file atomically, so uploading to an occupied path can create duplicates and make subsequent path lookups ambiguous. Use unique paths, or explicitly resolve/delete the previous file before uploading again. Laravel's `append()` and `prepend()` perform a read followed by `put()` and have the same duplicate-name limitation; this package provides no in-place append or overwrite operation.
 
@@ -144,7 +135,7 @@ try {
 | `$disk->mimeType('photos/a.txt')` | `string` | MIME type, defaulting to `application/octet-stream` when absent. |
 | `$disk->lastModified('photos/a.txt')` | `int` Unix timestamp | Modification time; missing/unusable remote timestamps can cause an error. |
 | `$disk->getVisibility('photos/a.txt')` | `'private'` | Current adapter visibility result. |
-| `$disk->setVisibility('photos/a.txt', 'private')` | `true` | Accepts `private` or `public`; does not change PikPak permissions. |
+| `$disk->setVisibility('photos/a.txt', 'private')` | `true` | `private` is accepted; public visibility raises an exception because PikPak cannot change ACLs. |
 
 ```php
 foreach ($disk->listContents('photos', true) as $entry) {
@@ -158,7 +149,7 @@ $mime = $disk->mimeType('photos/example.jpg');
 $modifiedAt = $disk->lastModified('photos/example.jpg');
 ```
 
-The adapter has no built-in `url()`, `temporaryUrl()`, or `temporaryUploadUrl()` implementation. `path()` only formats a path string; it does not provide a local file path or a PikPak download URL. Use `get()`, `readStream()`, `download()`, or `response()` to retrieve content. Laravel conveniences depend on the installed Laravel version and the host application's HTTP/container services.
+Laravel's `$disk->url('photos/a.txt')` calls the adapter's `getUrl()` and returns PikPak's current content link; PikPak chooses its expiry. Flysystem checksum calls use its stream-based fallback. The adapter has no built-in `temporaryUrl()` or `temporaryUploadUrl()` implementation. `path()` only formats a path string; it does not provide a local file path. Use `get()`, `readStream()`, `download()`, or `response()` to retrieve content. Laravel conveniences depend on the installed Laravel version and the host application's HTTP/container services.
 
 ### Direct file IDs
 
@@ -175,7 +166,7 @@ Direct file ID lookups address the account object directly and bypass the config
 
 ### Error handling
 
-The tables describe successful results. Laravel wrappers may return `false`/`null` for Flysystem exceptions when `throw` is disabled. This adapter also raises `RuntimeException` and `PikPakApiException` directly; those can propagate regardless of the `throw` setting. `sourceFileId()` is the exception: it catches lookup errors and returns `null`.
+The tables describe successful results. Laravel wrappers may return `false`/`null` for Flysystem exceptions when `throw` is disabled. The adapter wraps operation failures in the corresponding Flysystem exception. Laravel returns `false`/`null` for wrapped failures when `throw` is disabled; with `throw` enabled, the Flysystem exception propagates. The underlying `RuntimeException` or `PikPakApiException` is available as the previous exception. `sourceFileId()` is the exception: it catches lookup errors and returns `null`.
 
 ```php
 use OhMyGold\PikPakWebStorage\Exceptions\PikPakApiException;
@@ -205,6 +196,7 @@ The following lists every public operation declared by `PikPakFilesystemAdapter`
 
 | Adapter method | Return | Example / behavior |
 | --- | --- | --- |
+| `getUrl(string $path)` | `string` | `$adapter->getUrl('photos/a.txt')`. Current PikPak content link; the expiry is chosen by PikPak. |
 | `fileExists(string $path)` | `bool` | `$adapter->fileExists('photos/a.txt')`. Supports `@id/…`. |
 | `directoryExists(string $path)` | `bool` | `$adapter->directoryExists('photos')`. |
 | `write(string $path, string $contents, Config $config)` | `void` | `$adapter->write('photos/a.txt', 'Hello', $config)`. |
@@ -221,7 +213,7 @@ The following lists every public operation declared by `PikPakFilesystemAdapter`
 | `mimeType(string $path)` | `FileAttributes` | `$adapter->mimeType('photos/a.txt')->mimeType()` yields a MIME string. |
 | `lastModified(string $path)` | `FileAttributes` | `$adapter->lastModified('photos/a.txt')->lastModified()` yields `?int`. |
 | `visibility(string $path)` | `FileAttributes` | `$adapter->visibility('photos/a.txt')->visibility()` yields `'private'`. |
-| `setVisibility(string $path, string $visibility)` | `void` | `$adapter->setVisibility('photos/a.txt', 'private')`. Also accepts `public`; no remote ACL change. |
+| `setVisibility(string $path, string $visibility)` | `void` | `$adapter->setVisibility('photos/a.txt', 'private')`. `public` raises a Flysystem exception. |
 | `sourceFileId(string $path)` | `?string` | `$adapter->sourceFileId('photos/a.txt')`. Returns/caches a path's file ID, or `null` on any lookup error. |
 | `pathOccupied(string $path)` | `bool` | `$adapter->pathOccupied('photos/a.txt')`. Checks any same-name file/folder, including incomplete uploads. |
 | `pathIsUniqueTo(string $path, string $id)` | `bool` | `$adapter->pathIsUniqueTo('photos/a.txt', $id)`. True only for exactly one matching entry that is a file with that ID; includes incomplete entries. |
@@ -248,7 +240,7 @@ $requests = $adapter->lastUploadRequests();
 
 ### Constructing the adapter directly
 
-`PikPakFilesystemAdapter::__construct()` accepts the following parameters in order:
+`PikPakFilesystemAdapter::__construct()` accepts these parameters in order:
 
 | Parameter | Type | Default | Purpose |
 | --- | --- | --- | --- |
@@ -256,7 +248,7 @@ $requests = $adapter->lastUploadRequests();
 | `$rootFolderId` | `string` | `''` | Legacy starting folder ID. |
 | `$keyPrefix` | `string` | `''` | Visible path prefix. |
 | `$uploader` | `?PikPakOssUploader` | `null` | Optional OSS uploader instance. |
-| `$rootFolderPath` | `string` | `''` | Root directory path relative to the starting ID. |
+| `$rootFolderPath` | `string` | `''` | Root path relative to the starting ID. |
 | `$folderCache` | `?Illuminate\Contracts\Cache\Repository` | `null` | Optional Laravel cache repository. |
 | `$folderCacheTtl` | `int` | `3600` | Positive cache lifetime in seconds. |
 
@@ -312,20 +304,16 @@ $childId = $resolver->find($folderId, 'photos'); // string or null
 // $resolver->invalidate(); // Force future directory lookups to refresh.
 ```
 
+
 ## PikPak behavior and limits
 
 - Writes create file metadata and an upload session through the Drive API, then transfer the bytes directly to the temporary OSS endpoint. Files up to 10 MiB use one signed PUT; larger files use 10 MiB multipart parts.
 - Reads use the current PikPak content link and return a stream for `readStream()`.
 - `delete()` and `deleteDirectory()` move targets to PikPak trash through `files:batchTrash`; they do not permanently erase data. Deleting the configured root folder moves that folder to trash. Deleting the account root fails because it has no remote object ID.
 - `copy()` uses the PikPak batch-copy operation. If the destination name differs, the package renames the copied object after resolving its new ID; if the API does not return an ID and the new copy cannot be uniquely identified, the operation raises an exception.
-- PikPak's current Drive API does not expose file visibility changes. `visibility()` reports private and `setVisibility()` accepts the Flysystem values without changing remote ACLs.
+- PikPak's current Drive API does not expose file visibility changes. `visibility()` reports private; requesting public visibility fails with a Flysystem exception instead of silently claiming success.
+- PikPak does not expose a way to request a content URL with a caller-selected expiration time. The package therefore does not provide `temporaryUrl()` itself; Laravel applications can install a `buildTemporaryUrlsUsing()` callback if they have a separate URL service.
 - The Drive API and temporary OSS upload protocol used here are based on the project's current integration behavior and are not a stable public PikPak developer contract. API changes may require a package update.
 - The package does not implement refresh-token authentication, captcha handling, account management, sharing, or permanent deletion.
 
-The consuming application must protect its token and choose permissions appropriate to its read, upload, move, copy, and trash operations. Authentication failures stop with an exception; the package does not retry with another account or credential source.
-
-## Tests
-
-Run `composer install` and `composer test` for the automated regression suite. HTTP requests are faked and no PikPak credentials are needed. The suite covers path scoping, pagination, ambiguity, cache reuse/expiry/isolation/failure, creation, deletion invalidation, legacy configuration, and Laravel service provider integration.
-
-For an optional read-only integration check, supply `PIKPAK_API_TOKEN` through your environment and run `composer test:live`. It lists root folders, resolves one folder ID, and verifies cache reuse across resolver instances. It does not create, change, or delete remote files. An account with no root folders reports a skip.
+The adapter uses a bearer token and an optional legacy root folder ID; it does not have a device ID setting. The consuming application must protect its token and choose permissions appropriate to its read, upload, move, copy, and trash operations. Authentication failures stop with an exception; the package does not retry with another account or credential source.

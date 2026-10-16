@@ -10,8 +10,22 @@ use League\Flysystem\Config;
 use League\Flysystem\DirectoryAttributes;
 use League\Flysystem\FileAttributes;
 use League\Flysystem\FilesystemAdapter;
+use League\Flysystem\FilesystemException;
+use League\Flysystem\InvalidVisibilityProvided;
+use League\Flysystem\UnableToCheckExistence;
+use League\Flysystem\UnableToCopyFile;
+use League\Flysystem\UnableToCreateDirectory;
+use League\Flysystem\UnableToDeleteDirectory;
+use League\Flysystem\UnableToDeleteFile;
+use League\Flysystem\UnableToListContents;
+use League\Flysystem\UnableToMoveFile;
+use League\Flysystem\UnableToReadFile;
+use League\Flysystem\UnableToRetrieveMetadata;
+use League\Flysystem\UnableToSetVisibility;
+use League\Flysystem\UnableToWriteFile;
 use League\Flysystem\Visibility;
 use OhMyGold\PikPakWebStorage\Http\PikPakApiClient;
+use OhMyGold\PikPakWebStorage\Exceptions\PikPakApiException;
 use OhMyGold\PikPakWebStorage\Upload\PikPakOssUploader;
 use RuntimeException;
 use Throwable;
@@ -55,14 +69,30 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
         return $this->lastUploadRequests;
     }
 
+    public function getUrl(string $path): string
+    {
+        return $this->contentUrlForFile($this->resolveFile($path));
+    }
+
     public function fileExists(string $path): bool
     {
-        if ($this->isIdPath($path)) {
-            $file = $this->details($this->idFromPath($path));
-            return ($file['kind'] ?? '') === 'drive#file' && !($file['trashed'] ?? false);
-        }
+        return $this->runFlysystemOperation(function () use ($path): bool {
+            if ($this->isIdPath($path)) {
+                try {
+                    $file = $this->details($this->idFromPath($path));
+                } catch (PikPakApiException $exception) {
+                    if ($exception->httpStatus === 404) {
+                        return false;
+                    }
+                    throw $exception;
+                }
 
-        return $this->findChild($this->parentId($path), $this->basename($path), 'drive#file') !== null;
+                return ($file['kind'] ?? '') === 'drive#file' && !($file['trashed'] ?? false);
+            }
+
+            $parentId = $this->lookupParentId($path);
+            return $parentId !== null && $this->findChild($parentId, $this->basename($path), 'drive#file') !== null;
+        }, fn (Throwable $exception): UnableToCheckExistence => UnableToCheckExistence::forLocation($path, $exception));
     }
 
     /** Includes incomplete remote uploads so retries cannot silently create duplicate keys. */
@@ -99,130 +129,139 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
 
     public function directoryExists(string $path): bool
     {
-        if ($this->isRootPath($path)) {
-            $this->rootId();
-            return true;
-        }
+        return $this->runFlysystemOperation(function () use ($path): bool {
+            if ($this->isRootPath($path)) {
+                $this->rootId();
+                return true;
+            }
 
-        return $this->findChild($this->parentId($path), $this->basename($path), 'drive#folder') !== null;
+            $parentId = $this->lookupParentId($path);
+            return $parentId !== null && $this->findChild($parentId, $this->basename($path), 'drive#folder') !== null;
+        }, fn (Throwable $exception): UnableToCheckExistence => UnableToCheckExistence::forLocation($path, $exception));
     }
 
     public function write(string $path, string $contents, Config $config): void
     {
-        $stream = fopen('php://temp', 'w+b');
-        if ($stream === false) {
-            throw new RuntimeException('Unable to open temporary upload stream.');
-        }
+        $this->runFlysystemOperation(function () use ($path, $contents, $config): void {
+            $this->assertConfiguredVisibility($path, $config, Config::OPTION_VISIBILITY);
 
-        try {
-            $written = fwrite($stream, $contents);
-            if ($written !== strlen($contents)) {
-                throw new RuntimeException('PikPak upload contents could not be buffered.');
+            $stream = fopen('php://temp', 'w+b');
+            if ($stream === false) {
+                throw new RuntimeException('Unable to open temporary upload stream.');
             }
-            rewind($stream);
-            $this->writeStream($path, $stream, $config);
-        } finally {
-            fclose($stream);
-        }
+
+            try {
+                $written = fwrite($stream, $contents);
+                if ($written !== strlen($contents)) {
+                    throw new RuntimeException('PikPak upload contents could not be buffered.');
+                }
+                rewind($stream);
+                $this->writeStream($path, $stream, $config);
+            } finally {
+                fclose($stream);
+            }
+        }, fn (Throwable $exception): UnableToWriteFile => UnableToWriteFile::atLocation($path, 'PikPak upload failed.', $exception));
     }
 
     /** @param resource $contents */
     public function writeStream(string $path, $contents, Config $config): void
     {
-        $this->lastUploadRequests = [];
-        $this->lastUploadedFileId = '';
-        if (!is_resource($contents)) {
-            throw new RuntimeException('PikPak upload requires a stream.');
-        }
+        $this->runFlysystemOperation(function () use ($path, $contents, $config): void {
+            $this->assertConfiguredVisibility($path, $config, Config::OPTION_VISIBILITY);
+            $this->lastUploadRequests = [];
+            $this->lastUploadedFileId = '';
+            if (!is_resource($contents)) {
+                throw new RuntimeException('PikPak upload requires a stream.');
+            }
 
-        $parentId = $this->parentId($path, true);
-        $size = $this->streamSize($contents);
-        $sha1 = $this->streamHash($contents, 'sha1');
-        $metadata = $this->client->post(self::FILES, [
-            'kind' => 'drive#file',
-            'name' => $this->basename($path),
-            'size' => $size,
-            'hash' => strtoupper($sha1),
-            'upload_type' => 'UPLOAD_TYPE_RESUMABLE',
-            'objProvider' => ['provider' => 'UPLOAD_TYPE_UNKNOWN'],
-            'parent_id' => $parentId,
-            'folder_type' => 'NORMAL',
-        ]);
+            $parentId = $this->parentId($path, true);
+            $size = $this->streamSize($contents);
+            $sha1 = $this->streamHash($contents, 'sha1');
+            $metadata = $this->client->post(self::FILES, [
+                'kind' => 'drive#file',
+                'name' => $this->basename($path),
+                'size' => $size,
+                'hash' => strtoupper($sha1),
+                'upload_type' => 'UPLOAD_TYPE_RESUMABLE',
+                'objProvider' => ['provider' => 'UPLOAD_TYPE_UNKNOWN'],
+                'parent_id' => $parentId,
+                'folder_type' => 'NORMAL',
+            ]);
 
-        $file = $metadata['file'] ?? $metadata;
-        $id = (string) ($file['id'] ?? '');
-        $uploadParams = $metadata['resumable']['params'] ?? null;
-        if ($id === '') {
-            throw new RuntimeException('PikPak did not return a file identity.');
-        }
-        if (!is_array($uploadParams)) {
-            throw new RuntimeException('PikPak did not return upload session credentials.');
-        }
+            $file = $metadata['file'] ?? $metadata;
+            $id = (string) ($file['id'] ?? '');
+            $uploadParams = $metadata['resumable']['params'] ?? null;
+            if ($id === '') {
+                throw new RuntimeException('PikPak did not return a file identity.');
+            }
+            if (!is_array($uploadParams)) {
+                throw new RuntimeException('PikPak did not return upload session credentials.');
+            }
 
-        $this->lastUploadedFileId = $id;
-        $this->cache[$this->cacheKey($parentId, $this->basename($path))] = $id;
-        try {
-            $this->uploader->upload($uploadParams, $contents, $size);
-        } finally {
-            $this->lastUploadRequests = $this->uploader->lastRequests();
-        }
+            $this->lastUploadedFileId = $id;
+            $this->cache[$this->cacheKey($parentId, $this->basename($path))] = $id;
+            try {
+                $this->uploader->upload($uploadParams, $contents, $size);
+            } finally {
+                $this->lastUploadRequests = $this->uploader->lastRequests();
+            }
+        }, fn (Throwable $exception): UnableToWriteFile => UnableToWriteFile::atLocation($path, 'PikPak upload failed.', $exception));
     }
 
     public function read(string $path): string
     {
-        $stream = $this->readStream($path);
-        try {
-            $contents = stream_get_contents($stream);
-            if ($contents === false) {
-                throw new RuntimeException('PikPak file could not be read.');
-            }
+        return $this->runFlysystemOperation(function () use ($path): string {
+            $stream = $this->readStream($path);
+            try {
+                $contents = stream_get_contents($stream);
+                if ($contents === false) {
+                    throw new RuntimeException('PikPak file could not be read.');
+                }
 
-            return $contents;
-        } finally {
-            fclose($stream);
-        }
+                return $contents;
+            } finally {
+                fclose($stream);
+            }
+        }, fn (Throwable $exception): UnableToReadFile => UnableToReadFile::fromLocation($path, 'PikPak read failed.', $exception));
     }
 
     /** @return resource */
     public function readStream(string $path)
     {
-        $file = $this->resolveFile($path);
-        if (($file['kind'] ?? '') !== 'drive#file') {
-            throw new RuntimeException('PikPak file was not found.');
-        }
+        return $this->runFlysystemOperation(function () use ($path) {
+            $file = $this->resolveFile($path);
+            if (($file['kind'] ?? '') !== 'drive#file') {
+                throw new RuntimeException('PikPak file was not found.');
+            }
 
-        $url = $this->downloadUrl($file);
-        if ($url === '') {
-            $detail = $this->details((string) ($file['id'] ?? ''));
-            $url = $this->downloadUrl($detail);
-        }
-        if ($url === '') {
-            throw new RuntimeException('PikPak did not provide a download URL.');
-        }
+            $url = $this->contentUrlForFile($file);
 
-        try {
-            $response = Http::withOptions(['stream' => true])->connectTimeout(10)->timeout(120)->get($url);
-        } catch (Throwable) {
-            throw new RuntimeException('PikPak content download failed.');
-        }
-        if (!$response->successful()) {
-            throw new RuntimeException('PikPak content download failed.');
-        }
+            try {
+                $response = Http::withOptions(['stream' => true])->connectTimeout(10)->timeout(120)->get($url);
+            } catch (Throwable) {
+                throw new RuntimeException('PikPak content download failed.');
+            }
+            if (!$response->successful()) {
+                throw new RuntimeException('PikPak content download failed.');
+            }
 
-        $stream = $response->toPsrResponse()->getBody()->detach();
-        if (!is_resource($stream)) {
-            throw new RuntimeException('PikPak content stream is unavailable.');
-        }
+            $stream = $response->toPsrResponse()->getBody()->detach();
+            if (!is_resource($stream)) {
+                throw new RuntimeException('PikPak content stream is unavailable.');
+            }
 
-        return $stream;
+            return $stream;
+        }, fn (Throwable $exception): UnableToReadFile => UnableToReadFile::fromLocation($path, 'PikPak read failed.', $exception));
     }
 
     public function delete(string $path): void
     {
-        $file = $this->resolveFile($path);
-        $id = (string) ($file['id'] ?? '');
-        $this->trash($id);
-        unset($this->cache[$this->cacheKey((string) ($file['parent_id'] ?? ''), (string) ($file['name'] ?? ''))]);
+        $this->runFlysystemOperation(function () use ($path): void {
+            $file = $this->resolveFile($path);
+            $id = (string) ($file['id'] ?? '');
+            $this->trash($id);
+            unset($this->cache[$this->cacheKey((string) ($file['parent_id'] ?? ''), (string) ($file['name'] ?? ''))]);
+        }, fn (Throwable $exception): UnableToDeleteFile => UnableToDeleteFile::atLocation($path, 'PikPak delete failed.', $exception));
     }
 
     public function deleteById(string $id): void
@@ -238,20 +277,26 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
 
     public function deleteDirectory(string $path): void
     {
-        $folder = $this->resolveFolder($path);
-        $this->trash((string) ($folder['id'] ?? ''));
-        $this->folders->invalidate();
-        $this->cache = [];
+        $this->runFlysystemOperation(function () use ($path): void {
+            $folder = $this->resolveFolder($path);
+            $this->trash((string) ($folder['id'] ?? ''));
+            $this->folders->invalidate();
+            $this->cache = [];
+        }, fn (Throwable $exception): UnableToDeleteDirectory => UnableToDeleteDirectory::atLocation($path, 'PikPak directory deletion failed.', $exception));
     }
 
     public function createDirectory(string $path, Config $config): void
     {
-        if ($this->isRootPath($path)) {
-            $this->rootId(true);
-            return;
-        }
+        $this->runFlysystemOperation(function () use ($path, $config): void {
+            $this->assertConfiguredVisibility($path, $config, Config::OPTION_DIRECTORY_VISIBILITY);
 
-        $this->ensureFolderPathAndGetId($path);
+            if ($this->isRootPath($path)) {
+                $this->rootId(true);
+                return;
+            }
+
+            $this->ensureFolderPathAndGetId($path);
+        }, fn (Throwable $exception): UnableToCreateDirectory => UnableToCreateDirectory::atLocation($path, 'PikPak directory creation failed.', $exception));
     }
 
     /** Creates every folder in a relative path and returns its final remote ID. */
@@ -267,111 +312,141 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
 
     public function setVisibility(string $path, string $visibility): void
     {
-        if (!in_array($visibility, [Visibility::PRIVATE, Visibility::PUBLIC], true)) {
-            throw new RuntimeException('Unsupported PikPak visibility.');
-        }
+        $this->runFlysystemOperation(function () use ($path, $visibility): void {
+            if (!in_array($visibility, [Visibility::PRIVATE, Visibility::PUBLIC], true)) {
+                InvalidVisibilityProvided::withVisibility($visibility, 'private or public');
+            }
+
+            if ($visibility === Visibility::PUBLIC) {
+                throw UnableToSetVisibility::atLocation($path, 'PikPak does not support public file visibility.');
+            }
+
+            $this->resolveFile($path);
+        }, fn (Throwable $exception): UnableToSetVisibility => UnableToSetVisibility::atLocation($path, 'PikPak visibility update failed.', $exception));
     }
 
     public function visibility(string $path): FileAttributes
     {
-        $file = $this->resolveFile($path);
-        return new FileAttributes(
-            $path,
-            isset($file['size']) ? (int) $file['size'] : null,
-            Visibility::PRIVATE,
-            $this->timestamp($file['modified_time'] ?? null),
-            (string) ($file['mime_type'] ?? 'application/octet-stream'),
-        );
+        return $this->runFlysystemOperation(function () use ($path): FileAttributes {
+            $file = $this->resolveFile($path);
+            return new FileAttributes(
+                $path,
+                isset($file['size']) ? (int) $file['size'] : null,
+                Visibility::PRIVATE,
+                $this->timestamp($file['modified_time'] ?? null),
+                (string) ($file['mime_type'] ?? 'application/octet-stream'),
+            );
+        }, fn (Throwable $exception): UnableToRetrieveMetadata => UnableToRetrieveMetadata::visibility($path, 'PikPak visibility lookup failed.', $exception));
     }
 
     public function mimeType(string $path): FileAttributes
     {
-        $file = $this->resolveFile($path);
-        return new FileAttributes($path, null, null, null, (string) ($file['mime_type'] ?? 'application/octet-stream'));
+        return $this->runFlysystemOperation(function () use ($path): FileAttributes {
+            $file = $this->resolveFile($path);
+            return new FileAttributes($path, null, null, null, (string) ($file['mime_type'] ?? 'application/octet-stream'));
+        }, fn (Throwable $exception): UnableToRetrieveMetadata => UnableToRetrieveMetadata::mimeType($path, 'PikPak MIME type lookup failed.', $exception));
     }
 
     public function lastModified(string $path): FileAttributes
     {
-        $file = $this->resolveFile($path);
-        return new FileAttributes($path, null, null, $this->timestamp($file['modified_time'] ?? null));
+        return $this->runFlysystemOperation(function () use ($path): FileAttributes {
+            $file = $this->resolveFile($path);
+            return new FileAttributes($path, null, null, $this->timestamp($file['modified_time'] ?? null));
+        }, fn (Throwable $exception): UnableToRetrieveMetadata => UnableToRetrieveMetadata::lastModified($path, 'PikPak modification time lookup failed.', $exception));
     }
 
     public function fileSize(string $path): FileAttributes
     {
-        $file = $this->resolveFile($path);
-        return new FileAttributes($path, isset($file['size']) ? (int) $file['size'] : null);
+        return $this->runFlysystemOperation(function () use ($path): FileAttributes {
+            $file = $this->resolveFile($path);
+            return new FileAttributes($path, isset($file['size']) ? (int) $file['size'] : null);
+        }, fn (Throwable $exception): UnableToRetrieveMetadata => UnableToRetrieveMetadata::fileSize($path, 'PikPak file size lookup failed.', $exception));
     }
 
     public function listContents(string $path, bool $deep): iterable
     {
-        return $this->listDirectoryContents($path, $deep, []);
+        try {
+            yield from $this->listDirectoryContents($path, $deep, []);
+        } catch (FilesystemException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw UnableToListContents::atLocation($path, $deep, $exception);
+        }
     }
 
     public function move(string $source, string $destination, Config $config): void
     {
-        $file = $this->resolveFile($source);
-        $parentId = $this->parentId($destination, true);
-        $id = (string) $file['id'];
-        $this->client->post('https://api-drive.mypikpak.com/drive/v1/files:batchMove', [
-            'ids' => [$id],
-            'to' => ['parent_id' => $parentId],
-        ]);
-        $name = $this->basename($destination);
-        if ((string) ($file['name'] ?? '') !== $name) {
-            $this->rename($id, $name);
-        }
+        $this->runFlysystemOperation(function () use ($source, $destination, $config): void {
+            $this->assertConfiguredVisibility($destination, $config, Config::OPTION_VISIBILITY);
 
-        unset($this->cache[$this->cacheKey((string) ($file['parent_id'] ?? ''), (string) ($file['name'] ?? ''))]);
-        $this->cache[$this->cacheKey($parentId, $name)] = $id;
+            $file = $this->resolveFile($source);
+            $parentId = $this->parentId($destination, true);
+            $id = (string) $file['id'];
+            $this->client->post('https://api-drive.mypikpak.com/drive/v1/files:batchMove', [
+                'ids' => [$id],
+                'to' => ['parent_id' => $parentId],
+            ]);
+            $name = $this->basename($destination);
+            if ((string) ($file['name'] ?? '') !== $name) {
+                $this->rename($id, $name);
+            }
+
+            unset($this->cache[$this->cacheKey((string) ($file['parent_id'] ?? ''), (string) ($file['name'] ?? ''))]);
+            $this->cache[$this->cacheKey($parentId, $name)] = $id;
+        }, fn (Throwable $exception): UnableToMoveFile => UnableToMoveFile::fromLocationTo($source, $destination, $exception));
     }
 
     public function copy(string $source, string $destination, Config $config): void
     {
-        $file = $this->resolveFile($source);
-        $parentId = $this->parentId($destination, true);
-        $destinationName = $this->basename($destination);
-        $beforeIds = [];
-        if ($destinationName !== (string) ($file['name'] ?? '')) {
-            foreach ($this->children($parentId, true) as $child) {
-                $childId = (string) ($child['id'] ?? '');
-                if ($childId !== '') {
-                    $beforeIds[$childId] = true;
+        $this->runFlysystemOperation(function () use ($source, $destination, $config): void {
+            $this->assertConfiguredVisibility($destination, $config, Config::OPTION_VISIBILITY);
+
+            $file = $this->resolveFile($source);
+            $parentId = $this->parentId($destination, true);
+            $destinationName = $this->basename($destination);
+            $beforeIds = [];
+            if ($destinationName !== (string) ($file['name'] ?? '')) {
+                foreach ($this->children($parentId, true) as $child) {
+                    $childId = (string) ($child['id'] ?? '');
+                    if ($childId !== '') {
+                        $beforeIds[$childId] = true;
+                    }
                 }
             }
-        }
 
-        $response = $this->client->post('https://api-drive.mypikpak.com/drive/v1/files:batchCopy', [
-            'ids' => [(string) $file['id']],
-            'to' => ['parent_id' => $parentId],
-        ]);
+            $response = $this->client->post('https://api-drive.mypikpak.com/drive/v1/files:batchCopy', [
+                'ids' => [(string) $file['id']],
+                'to' => ['parent_id' => $parentId],
+            ]);
 
-        if ($destinationName === (string) ($file['name'] ?? '')) {
-            return;
-        }
+            if ($destinationName === (string) ($file['name'] ?? '')) {
+                return;
+            }
 
-        $sourceId = (string) $file['id'];
-        $copiedId = $this->copiedFileId($response, $sourceId);
-        if ($copiedId !== null && isset($beforeIds[$copiedId])) {
-            $copiedId = null;
-        }
-        if ($copiedId === null) {
-            $newCopies = [];
-            foreach ($this->children($parentId, true) as $child) {
-                if (($child['kind'] ?? '') === 'drive#file'
-                    && (string) ($child['name'] ?? '') === (string) ($file['name'] ?? '')
-                    && !isset($beforeIds[(string) ($child['id'] ?? '')])
-                    && (string) ($child['id'] ?? '') !== $sourceId
-                    && (string) ($child['id'] ?? '') !== '') {
-                    $newCopies[] = $child;
+            $sourceId = (string) $file['id'];
+            $copiedId = $this->copiedFileId($response, $sourceId);
+            if ($copiedId !== null && isset($beforeIds[$copiedId])) {
+                $copiedId = null;
+            }
+            if ($copiedId === null) {
+                $newCopies = [];
+                foreach ($this->children($parentId, true) as $child) {
+                    if (($child['kind'] ?? '') === 'drive#file'
+                        && (string) ($child['name'] ?? '') === (string) ($file['name'] ?? '')
+                        && !isset($beforeIds[(string) ($child['id'] ?? '')])
+                        && (string) ($child['id'] ?? '') !== $sourceId
+                        && (string) ($child['id'] ?? '') !== '') {
+                        $newCopies[] = $child;
+                    }
                 }
+                if (count($newCopies) !== 1) {
+                    throw new RuntimeException('PikPak copied file identity could not be resolved for rename.');
+                }
+                $copiedId = (string) $newCopies[0]['id'];
             }
-            if (count($newCopies) !== 1) {
-                throw new RuntimeException('PikPak copied file identity could not be resolved for rename.');
-            }
-            $copiedId = (string) $newCopies[0]['id'];
-        }
 
-        $this->rename($copiedId, $destinationName);
+            $this->rename($copiedId, $destinationName);
+        }, fn (Throwable $exception): UnableToCopyFile => UnableToCopyFile::fromLocationTo($source, $destination, $exception));
     }
 
     public function sourceFileId(string $path): ?string
@@ -469,6 +544,22 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
     private function rootId(bool $create = false): string
     {
         return $this->folders->resolve($this->rootFolderPath, $this->rootFolderId, $create);
+    }
+
+    private function lookupParentId(string $path): ?string
+    {
+        $segments = $this->relativeSegments($path);
+        array_pop($segments);
+        $parentId = $this->rootId();
+        foreach ($segments as $segment) {
+            $folderId = $this->folders->find($parentId, $segment);
+            if ($folderId === null) {
+                return null;
+            }
+            $parentId = $folderId;
+        }
+
+        return $parentId;
     }
 
     private function findChild(string $parentId, string $name, string $kind): ?array
@@ -578,6 +669,19 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
         return str_starts_with(strtolower($url), 'https://') ? $url : '';
     }
 
+    private function contentUrlForFile(array $file): string
+    {
+        $url = $this->downloadUrl($file);
+        if ($url === '') {
+            $url = $this->downloadUrl($this->details((string) ($file['id'] ?? '')));
+        }
+        if ($url === '') {
+            throw new RuntimeException('PikPak did not provide a download URL.');
+        }
+
+        return $url;
+    }
+
     private function segments(string $path): array
     {
         $path = trim($path, '/');
@@ -680,5 +784,41 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
     private function cacheKey(string $parentId, string $name): string
     {
         return $parentId . "\0" . $name;
+    }
+
+    private function assertConfiguredVisibility(string $path, Config $config, string $option): void
+    {
+        $visibility = $config->get($option);
+        if ($visibility === null) {
+            return;
+        }
+
+        if (!is_string($visibility)) {
+            InvalidVisibilityProvided::withVisibility(get_debug_type($visibility), 'private or public');
+        }
+
+        $this->assertVisibilitySupported($path, $visibility);
+    }
+
+    private function assertVisibilitySupported(string $path, string $visibility): void
+    {
+        if (!in_array($visibility, [Visibility::PRIVATE, Visibility::PUBLIC], true)) {
+            InvalidVisibilityProvided::withVisibility($visibility, 'private or public');
+        }
+
+        if ($visibility === Visibility::PUBLIC) {
+            throw UnableToSetVisibility::atLocation($path, 'PikPak does not support public file visibility.');
+        }
+    }
+
+    private function runFlysystemOperation(callable $operation, callable $failure): mixed
+    {
+        try {
+            return $operation();
+        } catch (FilesystemException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw $failure($exception);
+        }
     }
 }

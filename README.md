@@ -61,29 +61,256 @@ For compatibility, `root_folder_id` is still accepted as an optional starting fo
 use Illuminate\Support\Facades\Storage;
 
 $disk = Storage::disk('pikpak');
-$disk->put('photos/example.txt', 'Stored in PikPak');
-$contents = $disk->get('photos/example.txt');
-$stream = $disk->readStream('photos/example.txt');
-fclose($stream);
 ```
 
-The driver implements Flysystem 3 file and directory existence, reads and streams, writes and streams, listings, directory creation, move/copy, file metadata, and deletion. Listing requests follow every page and reject repeated page tokens. Same-name files of the requested kind are treated as ambiguous; the adapter fails instead of picking one.
+All ordinary paths below are relative to `root_folder_path`. For example, with `/备份/项目` configured as the root, `photos/example.txt` refers to `/备份/项目/photos/example.txt` in PikPak. An empty directory path `''` means the configured disk root. Path segments `.`/`..`, empty interior segments, and control characters are rejected by the adapter; `/` and `.` are accepted as root paths.
 
-The adapter accepts `@id/{file-id}` for direct detail/read/delete operations when a path name is ambiguous or a stable file ID is already known.
+### Files and directories
 
-### Adapter-specific helpers
+| Laravel call | Return on success | Usage |
+| --- | --- | --- |
+| `$disk->fileExists('photos/a.txt')` | `bool` | Check for a completed, non-trashed file. |
+| `$disk->fileMissing('photos/a.txt')` | `bool` | Inverse of `fileExists()`. |
+| `$disk->directoryExists('photos')` | `bool` | Check for a folder. Resolving a missing parent/configured root can throw. |
+| `$disk->directoryMissing('photos')` | `bool` | Inverse of `directoryExists()`. |
+| `$disk->exists('photos/a.txt')` | `bool` | Laravel/Flysystem check for a file or directory. |
+| `$disk->missing('photos/a.txt')` | `bool` | Inverse of `exists()`. |
+| `$disk->makeDirectory('photos/2026')` | `true` | Create every missing folder in the path. |
+| `$disk->delete('photos/a.txt')` | `true` | Move one file to trash. Also accepts an array of file paths. |
+| `$disk->deleteDirectory('photos/2026')` | `true` | Move the folder and its contents to trash and invalidate folder IDs. |
+| `$disk->copy('photos/a.txt', 'archive/a.txt')` | `true` | Copy a file; create missing destination folders. |
+| `$disk->move('photos/a.txt', 'archive/b.txt')` | `true` | Move/rename a file; create missing destination folders. |
 
-Laravel's disk adapter exposes the Flysystem adapter through `getAdapter()`:
+`copy()` and `move()` operate on files. This adapter does not implement directory move/copy. Same-name entries of the requested kind are ambiguous and cause an exception, including duplicates on different listing pages. Listing requests follow every page and reject repeated page tokens.
+
+### Writing and reading
+
+| Laravel call | Return on success | Usage |
+| --- | --- | --- |
+| `$disk->put('photos/a.txt', 'Hello')` | `true` | Upload a string; also accepts a readable, seekable stream. |
+| `$disk->writeStream('photos/a.txt', $stream)` | `true` | Upload from a readable, seekable stream; caller closes it. |
+| `$disk->putFile('photos', $uploadedFile)` | `string` path | Laravel helper that uploads a local/uploaded file under a generated name. |
+| `$disk->putFileAs('photos', $uploadedFile, 'a.jpg')` | `string` path | Upload a local/uploaded file under a specified name. |
+| `$disk->get('photos/a.txt')` | `string` | Read the entire file into memory. |
+| `$disk->json('data/settings.json')` | Decoded JSON | Laravel helper that reads the file and decodes JSON as associative arrays. |
+| `$disk->readStream('photos/a.txt')` | `resource` | Open a readable content stream; caller closes it. |
+| `$disk->download('photos/a.txt', 'download.txt')` | `StreamedResponse` | Return a download response from a Laravel controller. |
+| `$disk->response('photos/a.txt', 'preview.txt')` | `StreamedResponse` | Return an inline response from a Laravel controller. |
+
+Writes create a new remote file and upload session. They do not replace an existing same-name file atomically, so uploading to an occupied path can create duplicates and make subsequent path lookups ambiguous. Use unique paths, or explicitly resolve/delete the previous file before uploading again. Laravel's `append()` and `prepend()` perform a read followed by `put()` and have the same duplicate-name limitation; this package provides no in-place append or overwrite operation.
 
 ```php
-$adapter = Storage::disk('pikpak')->getAdapter();
-$fileId = $adapter->sourceFileId('photos/example.txt');
-$occupied = $adapter->pathOccupied('photos/example.txt');
-$folderId = $adapter->ensureFolderPathAndGetId('photos/2026');
-$uploadRequests = $adapter->lastUploadRequests();
+$disk->put('photos/example.txt', 'Stored in PikPak');
+$contents = $disk->get('photos/example.txt');
+
+// Upload a local file using a seekable stream.
+$input = fopen(storage_path('app/example.jpg'), 'rb');
+if ($input === false) {
+    throw new RuntimeException('Unable to open local file.');
+}
+try {
+    $disk->writeStream('photos/example.jpg', $input);
+} finally {
+    fclose($input);
+}
+
+// Read without loading the whole file into memory.
+$output = $disk->readStream('photos/example.jpg');
+if (!is_resource($output)) {
+    throw new RuntimeException('Unable to open remote stream.');
+}
+try {
+    // Consume or copy the stream here.
+} finally {
+    fclose($output);
+}
+
+// In a controller receiving an uploaded file:
+// $path = $disk->putFile('uploads', $request->file('file'));
+// $path = $disk->putFileAs('uploads', $request->file('file'), 'unique-name.jpg');
+// return $disk->download('photos/example.jpg', 'example.jpg');
 ```
 
-Additional methods are `pathIsUniqueTo($path, $id)`, `deleteById($id)`, and `lastUploadedFileId()`. `lastUploadRequests()` contains safe request summaries without signed query strings or temporary credential values.
+### Listing and metadata
+
+| Laravel call | Return on success | Usage |
+| --- | --- | --- |
+| `$disk->files('photos')` | `string[]` | Immediate file paths. Use `''` for the disk root. |
+| `$disk->allFiles('photos')` | `string[]` | File paths recursively. |
+| `$disk->directories('photos')` | `string[]` | Immediate directory paths. |
+| `$disk->allDirectories('photos')` | `string[]` | Directory paths recursively. |
+| `$disk->listContents('photos', false)` | `DirectoryListing` | Flysystem listing forwarded by Laravel; use `true` for recursion. |
+| `$disk->size('photos/a.txt')` | `int` bytes | File size. |
+| `$disk->mimeType('photos/a.txt')` | `string` | MIME type, defaulting to `application/octet-stream` when absent. |
+| `$disk->lastModified('photos/a.txt')` | `int` Unix timestamp | Modification time; missing/unusable remote timestamps can cause an error. |
+| `$disk->getVisibility('photos/a.txt')` | `'private'` | Current adapter visibility result. |
+| `$disk->setVisibility('photos/a.txt', 'private')` | `true` | Accepts `private` or `public`; does not change PikPak permissions. |
+
+```php
+foreach ($disk->listContents('photos', true) as $entry) {
+    $path = $entry->path();
+    $isFile = $entry->isFile();
+    $isDirectory = $entry->isDir();
+}
+
+$bytes = $disk->size('photos/example.jpg');
+$mime = $disk->mimeType('photos/example.jpg');
+$modifiedAt = $disk->lastModified('photos/example.jpg');
+```
+
+The adapter has no built-in `url()`, `temporaryUrl()`, or `temporaryUploadUrl()` implementation. `path()` only formats a path string; it does not provide a local file path or a PikPak download URL. Use `get()`, `readStream()`, `download()`, or `response()` to retrieve content. Laravel conveniences depend on the installed Laravel version and the host application's HTTP/container services.
+
+### Direct file IDs
+
+Use `@id/{file-id}` for `fileExists()`, reads, file metadata, and `delete()` when a stable file ID is already known:
+
+```php
+$exists = $disk->fileExists('@id/REMOTE_FILE_ID');
+$contents = $disk->get('@id/REMOTE_FILE_ID');
+$bytes = $disk->size('@id/REMOTE_FILE_ID');
+// $disk->delete('@id/REMOTE_FILE_ID'); // Moves the file to trash.
+```
+
+Direct file ID lookups address the account object directly and bypass the configured folder path. The syntax is not supported for directory operations, write destinations, or the path-based helper methods below. Use `deleteById()` to trash a known folder ID.
+
+### Error handling
+
+The tables describe successful results. Laravel wrappers may return `false`/`null` for Flysystem exceptions when `throw` is disabled. This adapter also raises `RuntimeException` and `PikPakApiException` directly; those can propagate regardless of the `throw` setting. `sourceFileId()` is the exception: it catches lookup errors and returns `null`.
+
+```php
+use OhMyGold\PikPakWebStorage\Exceptions\PikPakApiException;
+
+try {
+    $contents = $disk->get('photos/example.txt');
+} catch (PikPakApiException $error) {
+    $httpStatus = $error->httpStatus;     // ?int
+    $apiErrorCode = $error->apiErrorCode; // ?string, sanitized API error code
+    // Handle authentication, permissions, or API errors in your application.
+} catch (RuntimeException $error) {
+    // Handle invalid/missing/ambiguous paths and other adapter errors.
+}
+```
+
+## Complete adapter method reference
+
+Access the package adapter and the Flysystem operator through Laravel:
+
+```php
+$adapter = $disk->getAdapter(); // PikPakFilesystemAdapter
+$driver = $disk->getDriver();  // Flysystem FilesystemOperator
+$config = new \League\Flysystem\Config();
+```
+
+The following lists every public operation declared by `PikPakFilesystemAdapter`. Direct adapter writes/mutations return `void` and throw on failure; Laravel Storage wrappers typically return a boolean. Direct metadata calls return `League\Flysystem\FileAttributes`, not a scalar.
+
+| Adapter method | Return | Example / behavior |
+| --- | --- | --- |
+| `fileExists(string $path)` | `bool` | `$adapter->fileExists('photos/a.txt')`. Supports `@id/…`. |
+| `directoryExists(string $path)` | `bool` | `$adapter->directoryExists('photos')`. |
+| `write(string $path, string $contents, Config $config)` | `void` | `$adapter->write('photos/a.txt', 'Hello', $config)`. |
+| `writeStream(string $path, resource $contents, Config $config)` | `void` | `$adapter->writeStream('photos/a.jpg', $input, $config)`. Caller closes the stream. |
+| `read(string $path)` | `string` | `$adapter->read('photos/a.txt')`. Supports `@id/…`. |
+| `readStream(string $path)` | `resource` | `$adapter->readStream('photos/a.jpg')`. Caller closes the stream. |
+| `delete(string $path)` | `void` | `$adapter->delete('photos/a.txt')`. Trash a file; supports `@id/…`. |
+| `deleteDirectory(string $path)` | `void` | `$adapter->deleteDirectory('photos/2026')`. Trash a folder and invalidate directory IDs. |
+| `createDirectory(string $path, Config $config)` | `void` | `$adapter->createDirectory('photos/2026', $config)`. Create missing parents. |
+| `move(string $source, string $destination, Config $config)` | `void` | `$adapter->move('photos/a.txt', 'archive/b.txt', $config)`. Move/rename a file. |
+| `copy(string $source, string $destination, Config $config)` | `void` | `$adapter->copy('photos/a.txt', 'archive/a.txt', $config)`. Copy a file. |
+| `listContents(string $path, bool $deep)` | `iterable<StorageAttributes>` | `$adapter->listContents('', true)`. Yields `FileAttributes` and `DirectoryAttributes`. |
+| `fileSize(string $path)` | `FileAttributes` | `$adapter->fileSize('photos/a.txt')->fileSize()` yields `?int` bytes. |
+| `mimeType(string $path)` | `FileAttributes` | `$adapter->mimeType('photos/a.txt')->mimeType()` yields a MIME string. |
+| `lastModified(string $path)` | `FileAttributes` | `$adapter->lastModified('photos/a.txt')->lastModified()` yields `?int`. |
+| `visibility(string $path)` | `FileAttributes` | `$adapter->visibility('photos/a.txt')->visibility()` yields `'private'`. |
+| `setVisibility(string $path, string $visibility)` | `void` | `$adapter->setVisibility('photos/a.txt', 'private')`. Also accepts `public`; no remote ACL change. |
+| `sourceFileId(string $path)` | `?string` | `$adapter->sourceFileId('photos/a.txt')`. Returns/caches a path's file ID, or `null` on any lookup error. |
+| `pathOccupied(string $path)` | `bool` | `$adapter->pathOccupied('photos/a.txt')`. Checks any same-name file/folder, including incomplete uploads. |
+| `pathIsUniqueTo(string $path, string $id)` | `bool` | `$adapter->pathIsUniqueTo('photos/a.txt', $id)`. True only for exactly one matching entry that is a file with that ID; includes incomplete entries. |
+| `ensureFolderPathAndGetId(string $path)` | `string` | `$adapter->ensureFolderPathAndGetId('photos/2026')`. Create missing folders and return the final ID. Account root has no object ID and raises an error. |
+| `deleteById(string $id)` | `void` | `$adapter->deleteById($id)`. Trash a file/folder by its raw ID and invalidate folder cache. |
+| `lastUploadedFileId()` | `string` | `$adapter->lastUploadedFileId()`. Last upload's metadata ID, or `''` before an upload. Does not prove that bytes uploaded successfully. |
+| `lastUploadRequests()` | `array` | `$adapter->lastUploadRequests()`. Last upload's safe OSS request summaries, without credential values or signed query strings. |
+
+```php
+$fileId = $adapter->sourceFileId('photos/example.txt');
+$occupied = $adapter->pathOccupied('photos/new-name.txt');
+$folderId = $adapter->ensureFolderPathAndGetId('photos/2026');
+
+if ($fileId !== null) {
+    $unique = $adapter->pathIsUniqueTo('photos/example.txt', $fileId);
+}
+
+// Inspect immediately after an upload, including when the transfer throws.
+$lastId = $adapter->lastUploadedFileId();
+$requests = $adapter->lastUploadRequests();
+```
+
+`lastUploadedFileId()` and `lastUploadRequests()` are reset when an upload starts. `sourceFileId()` uses an instance-local file ID cache; the Laravel folder-cache TTL does not govern that file cache. `deleteById()` accepts raw IDs, so it can address objects outside the configured root.
+
+### Constructing the adapter directly
+
+`PikPakFilesystemAdapter::__construct()` accepts the following parameters in order:
+
+| Parameter | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `$client` | `PikPakApiClient` | Required | Authenticated Drive API client. |
+| `$rootFolderId` | `string` | `''` | Legacy starting folder ID. |
+| `$keyPrefix` | `string` | `''` | Visible path prefix. |
+| `$uploader` | `?PikPakOssUploader` | `null` | Optional OSS uploader instance. |
+| `$rootFolderPath` | `string` | `''` | Root directory path relative to the starting ID. |
+| `$folderCache` | `?Illuminate\Contracts\Cache\Repository` | `null` | Optional Laravel cache repository. |
+| `$folderCacheTtl` | `int` | `3600` | Positive cache lifetime in seconds. |
+
+For example, inside a Laravel application with its HTTP services available:
+
+```php
+use League\Flysystem\Filesystem;
+use OhMyGold\PikPakWebStorage\Flysystem\PikPakFilesystemAdapter;
+use OhMyGold\PikPakWebStorage\Http\PikPakApiClient;
+
+$client = new PikPakApiClient(config('filesystems.disks.pikpak.token'));
+$adapter = new PikPakFilesystemAdapter(
+    $client,
+    rootFolderPath: '/备份/项目',
+    folderCache: app('cache')->store(),
+    folderCacheTtl: 3600,
+);
+$filesystem = new Filesystem($adapter);
+$filesystem->write('example.txt', 'Hello');
+$contents = $filesystem->read('example.txt');
+```
+
+`keyPrefix` has the same meaning as the disk's `path_prefix`. `rootFolderId` is the legacy optional starting ID, `rootFolderPath` selects the path relative to it, and a null `uploader` selects the built-in OSS uploader. A null `folderCache` selects instance memory.
+
+## Supporting classes
+
+These lower-level classes are normally called by the driver. This reference includes every public method declared by the package, including its integration helpers.
+
+| Class | Public constructor / method | Return and purpose |
+| --- | --- | --- |
+| `Http\PikPakApiClient` | `__construct(string $token, ?string $deviceId = null)` | Create a Drive API client. Non-empty Bearer token required; optional device header. |
+| `Http\PikPakApiClient` | `get(string $url, array $query = [])` | `array`; issue a Drive API GET with query parameters. |
+| `Http\PikPakApiClient` | `post(string $url, array $body = [])` | `array`; issue a Drive API POST with a JSON body. |
+| `Http\PikPakApiClient` | `patch(string $url, array $body = [])` | `array`; issue a Drive API PATCH with a JSON body. |
+| `Http\PikPakApiClient` | `cacheIdentity()` | `string`; credential hash used to isolate caches. |
+| `Flysystem\FolderIdResolver` | `__construct(PikPakApiClient $client, ?Repository $cache = null, int $ttl = 3600)` | Create a resolver. `Repository` is the Illuminate cache contract; TTL must be positive. |
+| `Flysystem\FolderIdResolver` | `resolve(array $segments, string $parentId = '', bool $create = false)` | `string`; resolve folder-name segments from a parent ID; optionally create missing folders. `resolve([])` returns the supplied parent ID, including `''` for the account root. |
+| `Flysystem\FolderIdResolver` | `find(string $parentId, string $name)` | `?string`; look up one child folder; `null` if missing, exception if ambiguous. |
+| `Flysystem\FolderIdResolver` | `invalidate()` | `void`; invalidate folder mappings for the resolver's credential namespace. |
+| `Upload\PikPakOssUploader` | `upload(array $params, resource $stream, int $size)` | `void`; upload a seekable stream using the Drive API's temporary `resumable.params`; size is in bytes. |
+| `Upload\PikPakOssUploader` | `lastRequests()` | `array`; safe request summaries for the latest OSS upload. |
+| `PikPakWebStorageServiceProvider` | `boot()` | `void`; register the Laravel `pikpak` filesystem extension. Invoked automatically by Laravel. |
+| `Exceptions\PikPakApiException` | `__construct(string $message, ?int $httpStatus = null, ?string $apiErrorCode = null)` | Runtime exception with public readonly `httpStatus` and `apiErrorCode` properties. |
+
+Class names above are relative to `OhMyGold\PikPakWebStorage`. The HTTP client only permits HTTPS requests to `api-drive.mypikpak.com`. Low-level methods use Laravel's HTTP facade and require it to be initialized. `FolderIdResolver` expects already validated directory-name segments; ordinary applications should use the adapter's path methods.
+
+```php
+use OhMyGold\PikPakWebStorage\Flysystem\FolderIdResolver;
+
+$resolver = new FolderIdResolver($client, app('cache')->store());
+$folderId = $resolver->resolve(['备份', '项目']);
+$childId = $resolver->find($folderId, 'photos'); // string or null
+// $resolver->invalidate(); // Force future directory lookups to refresh.
+```
 
 ## PikPak behavior and limits
 

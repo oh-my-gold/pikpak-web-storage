@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace OhMyGold\PikPakWebStorage\Flysystem;
 
+use Illuminate\Contracts\Cache\Repository;
 use Illuminate\Support\Facades\Http;
 use League\Flysystem\Config;
 use League\Flysystem\DirectoryAttributes;
@@ -24,6 +25,8 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
     private string $lastUploadedFileId = '';
     private readonly string $rootFolderId;
     private readonly array $keyPrefix;
+    private readonly array $rootFolderPath;
+    private readonly FolderIdResolver $folders;
     private readonly PikPakOssUploader $uploader;
 
     public function __construct(
@@ -31,9 +34,14 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
         string $rootFolderId = '',
         string $keyPrefix = '',
         ?PikPakOssUploader $uploader = null,
+        string $rootFolderPath = '',
+        ?Repository $folderCache = null,
+        int $folderCacheTtl = 3600,
     ) {
         $this->rootFolderId = $rootFolderId === 'root' ? '' : $rootFolderId;
         $this->keyPrefix = $this->segments($keyPrefix);
+        $this->rootFolderPath = $this->segments($rootFolderPath);
+        $this->folders = new FolderIdResolver($client, $folderCache, $folderCacheTtl);
         $this->uploader = $uploader ?? new PikPakOssUploader();
     }
 
@@ -92,6 +100,7 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
     public function directoryExists(string $path): bool
     {
         if ($this->isRootPath($path)) {
+            $this->rootId();
             return true;
         }
 
@@ -219,6 +228,7 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
     public function deleteById(string $id): void
     {
         $this->trash($id);
+        $this->folders->invalidate();
         foreach ($this->cache as $key => $cachedId) {
             if ($cachedId === $id) {
                 unset($this->cache[$key]);
@@ -230,11 +240,14 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
     {
         $folder = $this->resolveFolder($path);
         $this->trash((string) ($folder['id'] ?? ''));
+        $this->folders->invalidate();
+        $this->cache = [];
     }
 
     public function createDirectory(string $path, Config $config): void
     {
         if ($this->isRootPath($path)) {
+            $this->rootId(true);
             return;
         }
 
@@ -244,26 +257,7 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
     /** Creates every folder in a relative path and returns its final remote ID. */
     public function ensureFolderPathAndGetId(string $path): string
     {
-        $parentId = $this->rootFolderId;
-        foreach ($this->relativeSegments($path) as $segment) {
-            $folder = $this->findChild($parentId, $segment, 'drive#folder');
-            if ($folder === null) {
-                $created = $this->client->post(self::FILES, [
-                    'kind' => 'drive#folder',
-                    'parent_id' => $parentId,
-                    'name' => $segment,
-                ]);
-                $folder = $created['file'] ?? $created;
-                if (empty($folder['id'])) {
-                    $folder = $this->findChild($parentId, $segment, 'drive#folder');
-                }
-            }
-            if (!is_array($folder) || empty($folder['id'])) {
-                throw new RuntimeException('PikPak folder creation failed.');
-            }
-
-            $parentId = (string) $folder['id'];
-        }
+        $parentId = $this->folders->resolve($this->relativeSegments($path), $this->rootId(true), true);
         if ($parentId === '') {
             throw new RuntimeException('PikPak folder path has no remote identity.');
         }
@@ -403,7 +397,7 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
     private function listDirectoryContents(string $path, bool $deep, array $visited): iterable
     {
         $atRoot = $this->isRootPath($path);
-        $folder = $atRoot ? ['id' => $this->rootFolderId] : $this->resolveFolder($path);
+        $folder = $atRoot ? ['id' => $this->rootId()] : $this->resolveFolder($path);
         $parentId = (string) ($folder['id'] ?? '');
         $visitKey = $parentId === '' ? '@account-root' : $parentId;
         if (isset($visited[$visitKey])) {
@@ -455,7 +449,7 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
     private function resolveFolder(string $path): array
     {
         if ($this->isRootPath($path)) {
-            return ['id' => $this->rootFolderId, 'kind' => 'drive#folder'];
+            return ['id' => $this->rootId(), 'kind' => 'drive#folder'];
         }
 
         $folder = $this->findChild($this->parentId($path), $this->basename($path), 'drive#folder');
@@ -469,31 +463,21 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
     {
         $segments = $this->relativeSegments($path);
         array_pop($segments);
-        $parentId = $this->rootFolderId;
-        foreach ($segments as $segment) {
-            $folder = $this->findChild($parentId, $segment, 'drive#folder');
-            if ($folder === null && $create) {
-                $created = $this->client->post(self::FILES, [
-                    'kind' => 'drive#folder',
-                    'parent_id' => $parentId,
-                    'name' => $segment,
-                ]);
-                $folder = $created['file'] ?? $created;
-                if (!is_array($folder) || empty($folder['id'])) {
-                    $folder = $this->findChild($parentId, $segment, 'drive#folder');
-                }
-            }
-            if (!is_array($folder) || empty($folder['id'])) {
-                throw new RuntimeException('PikPak folder path was not found.');
-            }
-            $parentId = (string) $folder['id'];
-        }
+        return $this->folders->resolve($segments, $this->rootId($create), $create);
+    }
 
-        return $parentId;
+    private function rootId(bool $create = false): string
+    {
+        return $this->folders->resolve($this->rootFolderPath, $this->rootFolderId, $create);
     }
 
     private function findChild(string $parentId, string $name, string $kind): ?array
     {
+        if ($kind === 'drive#folder') {
+            $id = $this->folders->find($parentId, $name);
+            return $id === null ? null : ['id' => $id, 'name' => $name, 'kind' => $kind, 'parent_id' => $parentId];
+        }
+
         $found = null;
         foreach ($this->children($parentId) as $child) {
             if (($child['kind'] ?? '') === $kind && (string) ($child['name'] ?? '') === $name) {

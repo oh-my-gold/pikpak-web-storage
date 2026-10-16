@@ -21,6 +21,12 @@ final class PikPakApiClient
         }
     }
 
+    /** Isolates cached IDs between credentials without exposing the token. */
+    public function cacheIdentity(): string
+    {
+        return hash('sha256', $this->token);
+    }
+
     public function get(string $url, array $query = []): array
     {
         return $this->request('GET', $url, $query);

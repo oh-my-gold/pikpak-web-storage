@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace OhMyGold\PikPakWebStorage;
 
+use Illuminate\Contracts\Cache\Repository;
 use Illuminate\Filesystem\FilesystemAdapter as LaravelFilesystemAdapter;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
 use League\Flysystem\Filesystem;
 use OhMyGold\PikPakWebStorage\Flysystem\PikPakFilesystemAdapter;
 use OhMyGold\PikPakWebStorage\Http\PikPakApiClient;
+use Throwable;
 
 final class PikPakWebStorageServiceProvider extends ServiceProvider
 {
@@ -25,10 +27,22 @@ final class PikPakWebStorageServiceProvider extends ServiceProvider
                 $token,
                 isset($config['device_id']) ? (string) $config['device_id'] : null,
             );
+            $folderCache = null;
+            if ($app->bound('cache')) {
+                try {
+                    $store = $app->make('cache')->store($config['folder_cache_store'] ?? null);
+                    $folderCache = $store instanceof Repository ? $store : null;
+                } catch (Throwable) {
+                    // Standalone use or unavailable cache falls back to instance memory.
+                }
+            }
             $adapter = new PikPakFilesystemAdapter(
                 $client,
                 (string) ($config['root_folder_id'] ?? ''),
                 (string) ($config['path_prefix'] ?? ''),
+                rootFolderPath: (string) ($config['root_folder_path'] ?? ''),
+                folderCache: $folderCache,
+                folderCacheTtl: (int) ($config['folder_cache_ttl'] ?? 3600),
             );
             $filesystemConfig = $config;
             unset($filesystemConfig['token']);

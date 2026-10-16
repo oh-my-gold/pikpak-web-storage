@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace OhMyGold\PikPakWebStorage\Flysystem;
 
+use InvalidArgumentException;
 use Illuminate\Support\Facades\Http;
 use League\Flysystem\Config;
 use League\Flysystem\DirectoryAttributes;
@@ -18,6 +19,9 @@ use Throwable;
 final class PikPakFilesystemAdapter implements FilesystemAdapter
 {
     private const FILES = 'https://api-drive.mypikpak.com/drive/v1/files';
+    private const SHARE = 'https://api-drive.mypikpak.com/drive/v1/share';
+    private const SHARE_LIST = 'https://api-drive.mypikpak.com/drive/v1/share/list';
+    private const SHARE_PAGE_SIZE = 100;
 
     private array $cache = [];
     private array $lastUploadRequests = [];
@@ -45,6 +49,107 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
     public function lastUploadRequests(): array
     {
         return $this->lastUploadRequests;
+    }
+
+    /**
+     * Returns a short-lived PUT URL for an existing PikPak upload session.
+     *
+     * @param array{endpoint: string, bucket: string, key: string, access_key_id: string, access_key_secret: string, security_token: string} $params
+     */
+    public function getPresignedUploadUrl(array $params, int $expiresInSeconds = 900): string
+    {
+        return $this->uploader->getPresignedUploadUrl($params, $expiresInSeconds);
+    }
+
+    /**
+     * Creates a PikPak sharing link and returns its link metadata.
+     * PikPak generates the pass code when a password-protected link is requested.
+     *
+     * @return array{share_id: string, share_url: string, pass_code: string, share_text: string}
+     */
+    public function share(string $path, bool $withPassword = false, int $expirationDays = 7): array
+    {
+        if ($expirationDays !== -1 && $expirationDays < 1) {
+            throw new InvalidArgumentException('PikPak share expiration must be a positive number of days or -1.');
+        }
+
+        $target = $this->resolveShareTarget($path);
+        $response = $this->client->post(self::SHARE, [
+            'file_ids' => [(string) $target['id']],
+            'share_to' => $withPassword ? 'encryptedlink' : 'publiclink',
+            'expiration_days' => $expirationDays,
+            'pass_code_option' => $withPassword ? 'REQUIRED' : 'NOT_REQUIRED',
+        ]);
+
+        $share = [];
+        foreach (['share_id', 'share_url', 'pass_code', 'share_text'] as $key) {
+            $value = $response[$key] ?? '';
+            $share[$key] = is_scalar($value) ? (string) $value : '';
+        }
+
+        if ($share['share_url'] === '') {
+            throw new RuntimeException('PikPak did not return a share link.');
+        }
+        if ($withPassword && $share['pass_code'] === '') {
+            throw new RuntimeException('PikPak did not return the generated share pass code.');
+        }
+
+        return $share;
+    }
+
+    /** Revokes a PikPak sharing link by its share ID. */
+    public function revokeShare(string $shareId): void
+    {
+        $shareId = trim($shareId);
+        if ($shareId === '') {
+            throw new InvalidArgumentException('A PikPak share ID is required.');
+        }
+
+        $this->client->post(self::SHARE . ':batchDelete', ['ids' => [$shareId]]);
+    }
+
+    /**
+     * Returns every share record from PikPak, following its page tokens.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function listShares(): array
+    {
+        $shares = [];
+        $token = '';
+        $seen = [];
+
+        do {
+            $query = [
+                'limit' => self::SHARE_PAGE_SIZE,
+                'thumbnail_size' => 'SIZE_SMALL',
+            ];
+            if ($token !== '') {
+                $query['page_token'] = $token;
+            }
+
+            $page = $this->client->get(self::SHARE_LIST, $query);
+            $pageShares = $page['data'] ?? [];
+            if (!is_array($pageShares)) {
+                throw new RuntimeException('PikPak share list response is invalid.');
+            }
+            foreach ($pageShares as $share) {
+                if (is_array($share)) {
+                    $shares[] = $share;
+                }
+            }
+
+            $nextToken = $page['next_page_token'] ?? '';
+            $token = is_scalar($nextToken) ? (string) $nextToken : '';
+            if ($token !== '') {
+                if (isset($seen[$token])) {
+                    throw new RuntimeException('PikPak share pagination token repeated.');
+                }
+                $seen[$token] = true;
+            }
+        } while ($token !== '');
+
+        return $shares;
     }
 
     public function fileExists(string $path): bool
@@ -450,6 +555,48 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
             throw new RuntimeException('PikPak file was not found.');
         }
         return $file;
+    }
+
+    private function resolveShareTarget(string $path): array
+    {
+        if ($this->isIdPath($path)) {
+            return $this->assertShareTarget($this->details($this->idFromPath($path)));
+        }
+
+        if ($this->isRootPath($path)) {
+            if ($this->rootFolderId === '') {
+                throw new RuntimeException('PikPak account root cannot be shared.');
+            }
+
+            return $this->assertShareTarget($this->details($this->rootFolderId));
+        }
+
+        $parentId = $this->parentId($path);
+        $name = $this->basename($path);
+        $file = $this->findChild($parentId, $name, 'drive#file');
+        $folder = $this->findChild($parentId, $name, 'drive#folder');
+
+        if ($file !== null && $folder !== null) {
+            throw new RuntimeException('PikPak path is ambiguous.');
+        }
+
+        $target = $file ?? $folder;
+        if ($target === null) {
+            throw new RuntimeException('PikPak share target was not found.');
+        }
+
+        return $this->assertShareTarget($target);
+    }
+
+    private function assertShareTarget(array $target): array
+    {
+        if (!in_array(($target['kind'] ?? ''), ['drive#file', 'drive#folder'], true)
+            || !empty($target['trashed'])
+            || (string) ($target['id'] ?? '') === '') {
+            throw new RuntimeException('PikPak share target was not found.');
+        }
+
+        return $target;
     }
 
     private function resolveFolder(string $path): array

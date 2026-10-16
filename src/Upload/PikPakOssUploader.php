@@ -6,6 +6,7 @@ namespace OhMyGold\PikPakWebStorage\Upload;
 
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use InvalidArgumentException;
 use RuntimeException;
 use Throwable;
 
@@ -14,12 +15,36 @@ final class PikPakOssUploader
     private const MULTIPART_THRESHOLD = 10 * 1024 * 1024;
     private const PART_SIZE = 10 * 1024 * 1024;
     private const CONTENT_TYPE = 'application/octet-stream';
+    private const MAX_PRESIGNED_URL_TTL = 3600;
 
     private array $lastRequests = [];
 
     public function lastRequests(): array
     {
         return $this->lastRequests;
+    }
+
+    public function getPresignedUploadUrl(array $params, int $expiresInSeconds = 900): string
+    {
+        if ($expiresInSeconds < 1 || $expiresInSeconds > self::MAX_PRESIGNED_URL_TTL) {
+            throw new InvalidArgumentException('PikPak upload URL expiration must be between 1 and 3600 seconds.');
+        }
+
+        $credentials = $this->credentials($params);
+        $expires = time() + $expiresInSeconds;
+        $canonicalResource = '/' . $credentials['bucket'] . '/' . $credentials['key']
+            . '?security-token=' . $credentials['security_token'];
+        $stringToSign = "PUT\n\n" . self::CONTENT_TYPE . "\n" . $expires . "\n" . $canonicalResource;
+        $signature = base64_encode(hash_hmac('sha1', $stringToSign, $credentials['access_key_secret'], true));
+        $host = $credentials['bucket'] . '.' . $credentials['endpoint'];
+        $query = http_build_query([
+            'OSSAccessKeyId' => $credentials['access_key_id'],
+            'Expires' => $expires,
+            'Signature' => $signature,
+            'security-token' => $credentials['security_token'],
+        ], '', '&', PHP_QUERY_RFC3986);
+
+        return 'https://' . $host . $this->encodedPath($credentials['key']) . '?' . $query;
     }
 
     /** @param resource $stream */

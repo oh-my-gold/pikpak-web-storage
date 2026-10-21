@@ -12,6 +12,7 @@ use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Facade;
 use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
+use League\Flysystem\UnableToCheckExistence;
 use OhMyGold\PikPakWebStorage\Exceptions\PikPakApiException;
 use OhMyGold\PikPakWebStorage\Flysystem\PikPakFilesystemAdapter;
 use OhMyGold\PikPakWebStorage\Http\PikPakApiClient;
@@ -571,10 +572,13 @@ final class PackageIntegrationTest extends TestCase
 
         $adapter = Storage::disk('pikpak')->getAdapter();
         self::assertInstanceOf(PikPakFilesystemAdapter::class, $adapter);
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('PikPak path is ambiguous.');
-
-        $adapter->fileExists('same.txt');
+        try {
+            $adapter->fileExists('same.txt');
+            self::fail('Expected an ambiguous path to fail.');
+        } catch (UnableToCheckExistence $exception) {
+            self::assertInstanceOf(RuntimeException::class, $exception->getPrevious());
+            self::assertSame('PikPak path is ambiguous.', $exception->getPrevious()->getMessage());
+        }
     }
 
     public function test_disk_requires_a_non_empty_bearer_token(): void

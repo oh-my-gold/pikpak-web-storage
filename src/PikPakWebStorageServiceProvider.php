@@ -32,10 +32,7 @@ final class PikPakWebStorageServiceProvider extends ServiceProvider
                 throw new InvalidArgumentException('The PikPak use_trash disk option must be a boolean value.');
             }
 
-            $client = new PikPakApiClient(
-                $token,
-                isset($config['device_id']) ? (string) $config['device_id'] : null,
-            );
+            $client = new PikPakApiClient($token);
             $folderCache = null;
             if ($app->bound('cache')) {
                 try {

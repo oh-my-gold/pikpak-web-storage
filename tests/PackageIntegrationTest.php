@@ -37,7 +37,6 @@ final class PackageIntegrationTest extends TestCase
                     'pikpak' => [
                         'driver' => 'pikpak',
                         'token' => 'test-bearer-token',
-                        'device_id' => 'test-device',
                         'root_folder_id' => '',
                         'path_prefix' => '',
                         'throw' => true,
@@ -106,8 +105,7 @@ final class PackageIntegrationTest extends TestCase
 
         $this->http->assertSent(fn (Request $request): bool => $request->method() === 'POST'
             && str_ends_with(parse_url($request->url(), PHP_URL_PATH) ?: '', '/files')
-            && $request->hasHeader('Authorization', 'Bearer test-bearer-token')
-            && $request->hasHeader('x-device-id', 'test-device'));
+            && $request->hasHeader('Authorization', 'Bearer test-bearer-token'));
         $this->http->assertSent(fn (Request $request): bool => $request->method() === 'PUT'
             && str_starts_with($request->url(), 'https://pikpak-bucket.oss.example.com/'));
     }

@@ -32,7 +32,6 @@ Laravel 会自动发现 `PikPakWebStorageServiceProvider`。如果关闭了包�
     'pikpak' => [
         'driver' => 'pikpak',
         'token' => env('PIKPAK_TOKEN'),
-        'device_id' => env('PIKPAK_DEVICE_ID'),
         'root_folder_path' => env('PIKPAK_ROOT_FOLDER_PATH', ''),
         'path_prefix' => env('PIKPAK_PATH_PREFIX', ''),
         'use_trash' => true,
@@ -42,8 +41,6 @@ Laravel 会自动发现 `PikPakWebStorageServiceProvider`。如果关闭了包�
 ```
 
 请将 `PIKPAK_TOKEN` 存放在密钥管理器或环境变量中，不要提交到代码仓库。设置 `PIKPAK_ROOT_FOLDER_PATH=/备份/项目` 可将此目录作为磁盘根目录。空路径或 `/` 表示账号根目录。驱动会按需逐级解析 PikPak 文件夹 ID，每次仅查找一层并使用文件夹过滤器；每页最多请求 500 条。读取时，配置的根路径不存在会报错；写入和创建目录时会创建缺失的目录。路径均相对于配置的磁盘根目录。
-
-`device_id` 是可选设备请求头；应用没有 PikPak 设备 ID 时可以省略。
 
 有 Laravel 缓存时，驱动默认使用应用的默认缓存 store；缓存不可用时回退到当前 adapter 实例的内存缓存。可选配置 `folder_cache_store` 指定 Laravel 缓存 store，`folder_cache_ttl` 指定缓存秒数，默认 `3600`。缓存只保存成功的文件夹查询结果，并按 Bearer Token 的哈希隔离。删除目录或调用 `deleteById()` 会清除对应文件夹映射，包括后代映射。外部文件夹变更会在缓存过期后生效；也可以清理所选缓存 store 以立即刷新。驱动会检查所有分页；若同名文件夹有多个，则会报错。
 
@@ -214,7 +211,7 @@ adapter 的写入和变更方法成功时返回 `void`，失败时抛出异常�
 
 `sourceFileId()` 使用 adapter 实例内的文件 ID 缓存；Laravel 文件夹缓存 TTL 不影响此缓存。`deleteById()` 接受原始 ID，因此可访问配置根目录以外的对象。`lastUploadedFileId()` 与 `lastUploadRequests()` 会在上传开始时重置。`lastUploadRequests()` 适合用于排查，不包含签名 URL 或临时凭据。
 
-直接构造 adapter 时，构造参数依次为：`PikPakApiClient $client`、`string $rootFolderId = ''`、`string $keyPrefix = ''`、`?PikPakOssUploader $uploader = null`、`string $rootFolderPath = ''`、`?Illuminate\Contracts\Cache\Repository $folderCache = null`、`int $folderCacheTtl = 3600`、`bool $useTrash = true`。`keyPrefix` 对应磁盘配置的 `path_prefix`；传入空 uploader 会使用内建 OSS uploader；空缓存会使用实例内存缓存。`PikPakApiClient` 接受 Bearer Token 和可选的设备 ID。
+直接构造 adapter 时，构造参数依次为：`PikPakApiClient $client`、`string $rootFolderId = ''`、`string $keyPrefix = ''`、`?PikPakOssUploader $uploader = null`、`string $rootFolderPath = ''`、`?Illuminate\Contracts\Cache\Repository $folderCache = null`、`int $folderCacheTtl = 3600`、`bool $useTrash = true`。`keyPrefix` 对应磁盘配置的 `path_prefix`；传入空 uploader 会使用内建 OSS uploader；空缓存会使用实例内存缓存。`PikPakApiClient` 接受 Bearer Token。
 
 ## 错误处理
 

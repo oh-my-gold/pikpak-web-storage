@@ -32,7 +32,6 @@ Laravel 會自動探索 `PikPakWebStorageServiceProvider`。若已停用套件�
     'pikpak' => [
         'driver' => 'pikpak',
         'token' => env('PIKPAK_TOKEN'),
-        'device_id' => env('PIKPAK_DEVICE_ID'),
         'root_folder_path' => env('PIKPAK_ROOT_FOLDER_PATH', ''),
         'path_prefix' => env('PIKPAK_PATH_PREFIX', ''),
         'use_trash' => true,
@@ -42,8 +41,6 @@ Laravel 會自動探索 `PikPakWebStorageServiceProvider`。若已停用套件�
 ```
 
 請將 `PIKPAK_TOKEN` 存放於密鑰管理器或環境變數中，不要提交至原始碼儲存庫。設定 `PIKPAK_ROOT_FOLDER_PATH=/備份/專案` 可將此資料夾作為磁碟根目錄。空路徑或 `/` 代表帳號根目錄。驅動程式會依需要逐層解析 PikPak 資料夾 ID，每次只查詢一層並使用資料夾篩選器；每頁最多請求 500 筆。讀取時，若設定的根路徑不存在會發生錯誤；寫入與建立目錄時則會建立缺少的目錄。路徑皆相對於設定的磁碟根目錄。
-
-`device_id` 是選擇性的裝置要求標頭；應用程式沒有 PikPak 裝置 ID 時可省略。
 
 若 Laravel 快取可用，驅動程式預設使用應用程式的預設快取 store；若快取無法初始化或存取，會改用目前 adapter 執行個體的記憶體快取。可選設定 `folder_cache_store` 指定 Laravel 快取 store，`folder_cache_ttl` 指定快取秒數，預設為 `3600`。快取只儲存成功的資料夾查詢結果，並以 Bearer Token 雜湊值隔離。刪除目錄或呼叫 `deleteById()` 會清除相關資料夾對應，包括子目錄。外部資料夾變更會在快取到期後生效；也可清除所選快取 store 立即更新。驅動程式會檢查所有分頁；若同名資料夾不只一個，會發生錯誤。
 
@@ -214,7 +211,7 @@ adapter 的寫入與變更方法成功時回傳 `void`，失敗時拋出例外�
 
 `sourceFileId()` 使用 adapter 執行個體內的檔案 ID 快取；Laravel 資料夾快取 TTL 不會影響此快取。`deleteById()` 接受原始 ID，因此可存取設定根目錄以外的物件。`lastUploadedFileId()` 與 `lastUploadRequests()` 會在上傳開始時重設。`lastUploadRequests()` 可用於排除問題，但不含簽署 URL 或臨時憑證。
 
-直接建立 adapter 時，建構參數依序為：`PikPakApiClient $client`、`string $rootFolderId = ''`、`string $keyPrefix = ''`、`?PikPakOssUploader $uploader = null`、`string $rootFolderPath = ''`、`?Illuminate\Contracts\Cache\Repository $folderCache = null`、`int $folderCacheTtl = 3600`、`bool $useTrash = true`。`keyPrefix` 對應磁碟的 `path_prefix`；傳入空 uploader 會使用內建 OSS uploader；空快取則使用執行個體記憶體。`PikPakApiClient` 接受 Bearer Token 與選擇性的裝置 ID。
+直接建立 adapter 時，建構參數依序為：`PikPakApiClient $client`、`string $rootFolderId = ''`、`string $keyPrefix = ''`、`?PikPakOssUploader $uploader = null`、`string $rootFolderPath = ''`、`?Illuminate\Contracts\Cache\Repository $folderCache = null`、`int $folderCacheTtl = 3600`、`bool $useTrash = true`。`keyPrefix` 對應磁碟的 `path_prefix`；傳入空 uploader 會使用內建 OSS uploader；空快取則使用執行個體記憶體。`PikPakApiClient` 接受 Bearer Token。
 
 ## 錯誤處理
 

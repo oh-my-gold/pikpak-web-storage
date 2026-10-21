@@ -14,7 +14,6 @@ final class PikPakApiClient
 
     public function __construct(
         private readonly string $token,
-        private readonly ?string $deviceId = null,
     ) {
         if (trim($this->token) === '') {
             throw new InvalidArgumentException('A PikPak Bearer token is required.');
@@ -55,10 +54,6 @@ final class PikPakApiClient
             'Referer' => 'https://mypikpak.com/',
             'User-Agent' => 'Mozilla/5.0 (Linux; Android 16; Pixel 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36',
         ];
-        if ($this->deviceId !== null && $this->deviceId !== '') {
-            $headers['x-device-id'] = $this->deviceId;
-        }
-
         $request = Http::withHeaders($headers)->connectTimeout(10)->timeout(30);
         $response = match ($method) {
             'GET' => $request->get($url, $query),

@@ -40,6 +40,7 @@ Add a disk to `config/filesystems.php`:
         'device_id' => env('PIKPAK_DEVICE_ID'),
         'root_folder_id' => env('PIKPAK_ROOT_FOLDER_ID', ''),
         'path_prefix' => env('PIKPAK_PATH_PREFIX', ''),
+        'use_trash' => env('PIKPAK_USE_TRASH', true),
         'throw' => true,
     ],
 ],
@@ -48,6 +49,8 @@ Add a disk to `config/filesystems.php`:
 Store `PIKPAK_TOKEN` in the application's secret manager or environment, and keep it out of source control. An empty root folder ID selects the PikPak account root. The literal value `root` is normalized to the same account root. A non-empty root folder ID scopes ordinary paths to that folder.
 
 `path_prefix` preserves a visible leading prefix in paths returned from a root listing. When an input begins with that exact prefix, it is removed before remote lookup. Inputs without it are still relative to `root_folder_id`, so `path_prefix` is not an access-control boundary.
+
+`use_trash` defaults to `true`. With the default, `delete()`, `deleteDirectory()`, and `deleteById()` move items to PikPak trash. Set it to `false` to permanently delete items directly through PikPak's `files:batchDelete` endpoint without first moving them to trash.
 
 ## Use Laravel Storage
 
@@ -159,13 +162,13 @@ Both methods require PikPak's Share permission. Revoking a share link does not d
 
 - Writes create file metadata and an upload session through the Drive API, then transfer the bytes directly to the temporary OSS endpoint. Files up to 10 MiB use one signed PUT; larger files use 10 MiB multipart parts.
 - Reads use the current PikPak content link and return a stream for `readStream()`.
-- `delete()` and `deleteDirectory()` move targets to PikPak trash through `files:batchTrash`; they do not permanently erase data. Deleting the configured root folder moves that folder to trash. Deleting the account root fails because it has no remote object ID.
+- `delete()` and `deleteDirectory()` follow the disk's `use_trash` option: by default they move targets to PikPak trash through `files:batchTrash`; with `use_trash` set to `false`, they permanently delete targets through `files:batchDelete`. Deleting the configured root folder applies to that folder. Deleting the account root fails because it has no remote object ID.
 - `copy()` uses the PikPak batch-copy operation. If the destination name differs, the package renames the copied object after resolving its new ID; if the API does not return an ID and the new copy cannot be uniquely identified, the operation raises an exception.
 - PikPak's current Drive API does not expose file visibility changes. `visibility()` reports private and `setVisibility()` accepts the Flysystem values without changing remote ACLs.
 - The Drive API and temporary OSS upload protocol used here are based on the project's current integration behavior and are not a stable public PikPak developer contract. API changes may require a package update.
-- The package can list and revoke share links, but does not set a custom share password, implement refresh-token authentication, handle captcha, manage accounts, or permanently delete files.
+- The package can list and revoke share links, but does not set a custom share password, implement refresh-token authentication, handle captcha, or manage accounts.
 
-The consuming application must protect its token and choose permissions appropriate to its read, upload, move, copy, trash, and share operations. Authentication failures stop with an exception; the package does not retry with another account or credential source.
+The consuming application must protect its token and choose permissions appropriate to its read, upload, move, copy, delete, and share operations. Authentication failures stop with an exception; the package does not retry with another account or credential source.
 
 ## Run the test suite
 

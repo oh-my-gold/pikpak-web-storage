@@ -262,6 +262,58 @@ final class PackageIntegrationTest extends TestCase
         self::assertSame(['move', 'rename:renamed.txt', 'copy', 'rename:copy.txt', 'trash:copy-id'], $operations);
     }
 
+    public function test_delete_permanently_when_trash_is_disabled(): void
+    {
+        $this->app->make('config')->set('filesystems.disks.pikpak.use_trash', false);
+        $operations = [];
+        $this->http->fake(function (Request $request) use (&$operations) {
+            $path = parse_url($request->url(), PHP_URL_PATH) ?: '';
+
+            if ($request->method() === 'GET' && str_ends_with($path, '/files')) {
+                return $this->http->response([
+                    'files' => [['id' => 'file-id', 'name' => 'manual.pdf', 'kind' => 'drive#file']],
+                ]);
+            }
+
+            if ($request->method() === 'POST' && str_ends_with($path, '/files:batchDelete')) {
+                $operations[] = ['endpoint' => 'batchDelete', 'ids' => $request->data()['ids']];
+                return $this->http->response([]);
+            }
+
+            return $this->http->response(['error' => 'unexpected request'], 500);
+        });
+
+        Storage::disk('pikpak')->delete('manual.pdf');
+
+        self::assertSame([['endpoint' => 'batchDelete', 'ids' => ['file-id']]], $operations);
+    }
+
+    public function test_delete_directory_permanently_when_trash_is_disabled(): void
+    {
+        $this->app->make('config')->set('filesystems.disks.pikpak.use_trash', false);
+        $operations = [];
+        $this->http->fake(function (Request $request) use (&$operations) {
+            $path = parse_url($request->url(), PHP_URL_PATH) ?: '';
+
+            if ($request->method() === 'GET' && str_ends_with($path, '/files')) {
+                return $this->http->response([
+                    'files' => [['id' => 'folder-id', 'name' => 'archive', 'kind' => 'drive#folder']],
+                ]);
+            }
+
+            if ($request->method() === 'POST' && str_ends_with($path, '/files:batchDelete')) {
+                $operations[] = ['endpoint' => 'batchDelete', 'ids' => $request->data()['ids']];
+                return $this->http->response([]);
+            }
+
+            return $this->http->response(['error' => 'unexpected request'], 500);
+        });
+
+        Storage::disk('pikpak')->deleteDirectory('archive');
+
+        self::assertSame([['endpoint' => 'batchDelete', 'ids' => ['folder-id']]], $operations);
+    }
+
     public function test_share_returns_a_seven_day_link_without_a_password_by_default(): void
     {
         $this->http->fake(function (Request $request) {

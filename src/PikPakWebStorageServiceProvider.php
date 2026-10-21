@@ -21,6 +21,15 @@ final class PikPakWebStorageServiceProvider extends ServiceProvider
                 throw new InvalidArgumentException('A PikPak Bearer token is required for this disk.');
             }
 
+            $rawUseTrash = $config['use_trash'] ?? true;
+            if (!is_scalar($rawUseTrash)) {
+                throw new InvalidArgumentException('The PikPak use_trash disk option must be a boolean value.');
+            }
+            $useTrash = filter_var($rawUseTrash, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+            if ($useTrash === null) {
+                throw new InvalidArgumentException('The PikPak use_trash disk option must be a boolean value.');
+            }
+
             $client = new PikPakApiClient(
                 $token,
                 isset($config['device_id']) ? (string) $config['device_id'] : null,
@@ -29,6 +38,8 @@ final class PikPakWebStorageServiceProvider extends ServiceProvider
                 $client,
                 (string) ($config['root_folder_id'] ?? ''),
                 (string) ($config['path_prefix'] ?? ''),
+                null,
+                $useTrash,
             );
             $filesystemConfig = $config;
             unset($filesystemConfig['token']);

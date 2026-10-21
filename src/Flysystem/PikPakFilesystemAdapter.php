@@ -35,6 +35,7 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
         string $rootFolderId = '',
         string $keyPrefix = '',
         ?PikPakOssUploader $uploader = null,
+        private readonly bool $useTrash = true,
     ) {
         $this->rootFolderId = $rootFolderId === 'root' ? '' : $rootFolderId;
         $this->keyPrefix = $this->segments($keyPrefix);
@@ -317,13 +318,13 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
     {
         $file = $this->resolveFile($path);
         $id = (string) ($file['id'] ?? '');
-        $this->trash($id);
+        $this->deleteRemote($id);
         unset($this->cache[$this->cacheKey((string) ($file['parent_id'] ?? ''), (string) ($file['name'] ?? ''))]);
     }
 
     public function deleteById(string $id): void
     {
-        $this->trash($id);
+        $this->deleteRemote($id);
         foreach ($this->cache as $key => $cachedId) {
             if ($cachedId === $id) {
                 unset($this->cache[$key]);
@@ -334,7 +335,7 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
     public function deleteDirectory(string $path): void
     {
         $folder = $this->resolveFolder($path);
-        $this->trash((string) ($folder['id'] ?? ''));
+        $this->deleteRemote((string) ($folder['id'] ?? ''));
     }
 
     public function createDirectory(string $path, Config $config): void
@@ -710,12 +711,14 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
         $this->client->patch(self::FILES . '/' . rawurlencode($id), ['name' => $name]);
     }
 
-    private function trash(string $id): void
+    private function deleteRemote(string $id): void
     {
         if ($id === '') {
-            throw new RuntimeException('PikPak directory has no remote identity and cannot be trashed.');
+            throw new RuntimeException('PikPak file or directory has no remote identity and cannot be deleted.');
         }
-        $this->client->post('https://api-drive.mypikpak.com/drive/v1/files:batchTrash', ['ids' => [$id]]);
+
+        $action = $this->useTrash ? ':batchTrash' : ':batchDelete';
+        $this->client->post(self::FILES . $action, ['ids' => [$id]]);
     }
 
     private function copiedFileId(array $response, string $sourceId): ?string

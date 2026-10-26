@@ -216,9 +216,9 @@ adapter 的写入和变更方法成功时返回 `void`，失败时抛出异常�
 | `getFileById($id, $query = [], $extraHeaders = [])` | `array` | 按稳定 ID 查询 Drive 文件或目录元数据。 |
 | `getFileByIdWithStatus($id, $query = [], $extraHeaders = [])` | `array` | 按稳定 ID 查询 Drive 元数据并返回 HTTP 状态码。 |
 | `createUploadSession($parentId, $name, $size, $sha1)` | `array` | 创建 resumable 上传会话，返回 `data` 和 HTTP `status`。 |
-| `createFolderBelowId($parentId, $name)` | `array` | 在指定目录 ID 下创建一个子目录并返回云端记录。 |
+| `createFolderBelowId($parentId, $name)` | `array` | 在指定父目录 ID 下创建一个子目录并返回云端记录；空 ID 表示账号根目录。 |
 | `listChildren($parentId, $includeIncomplete = false)` | `array` | 自动分页读取子项；可选择包含尚未完成的上传。 |
-| `occupiedChildInFolder($parentId, $name)` | `?array` | 查找直接子项；若分页未完成而无法确认不存在，会抛出异常。 |
+| `occupiedChildInFolder($parentId, $name)` | `?array` | 查找直接子项；空 ID 表示账号根目录。若分页未完成而无法确认不存在，会抛出异常。 |
 | `fileIdIncludingIncomplete($path)` | `?string` | 按路径查询文件 ID，包括仍在处理中的上传；重名时抛出异常。 |
 | `filePhaseAtPath($id, $path)` | `?string` | 只有 ID 仍对应此路径时才返回文件处理阶段。 |
 | `fileIsCompleteAtPath($id, $path)` | `bool` | 检查文件是否已达到 `PHASE_TYPE_COMPLETE`。 |

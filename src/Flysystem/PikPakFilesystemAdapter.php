@@ -134,8 +134,8 @@ class PikPakFilesystemAdapter implements FilesystemAdapter
     /** Create a folder directly below a known parent ID and return its provider record. */
     public function createFolderBelowId(string $parentId, string $name): array
     {
-        if (trim($parentId) === '' || trim($name) === '') {
-            throw new InvalidArgumentException('A PikPak parent ID and folder name are required.');
+        if (trim($name) === '') {
+            throw new InvalidArgumentException('A PikPak folder name is required.');
         }
         $response = $this->client->post(self::FILES, [
             'kind' => 'drive#folder',
@@ -153,8 +153,8 @@ class PikPakFilesystemAdapter implements FilesystemAdapter
     /** Find an occupied direct child without silently treating a partial page as absence. */
     public function occupiedChildInFolder(string $parentId, string $name): ?array
     {
-        if (trim($parentId) === '' || trim($name) === '') {
-            throw new InvalidArgumentException('A PikPak parent ID and child name are required.');
+        if (trim($name) === '') {
+            throw new InvalidArgumentException('A PikPak child name is required.');
         }
         $page = $this->client->get(self::FILES, [
             'parent_id' => $parentId,

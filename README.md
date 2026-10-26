@@ -228,9 +228,9 @@ The following lists every public operation declared by `PikPakFilesystemAdapter`
 | `getFileById(string $id, array $query = [], array $extraHeaders = [])` | `array` | Fetch Drive metadata by stable file or folder ID. |
 | `getFileByIdWithStatus(string $id, array $query = [], array $extraHeaders = [])` | `array` | Fetch Drive metadata and the HTTP response status by stable ID. |
 | `createUploadSession(string $parentId, string $name, int $size, string $sha1)` | `array` | Create a resumable file session; returns `data` and HTTP `status`. |
-| `createFolderBelowId(string $parentId, string $name)` | `array` | Create one folder below a server-owned folder ID and return its provider record. |
+| `createFolderBelowId(string $parentId, string $name)` | `array` | Create one folder below a parent ID and return its provider record. An empty parent ID means the account root. |
 | `listChildren(string $parentId, bool $includeIncomplete = false)` | `array` | Fetch all paginated child records; include incomplete uploads when requested. |
-| `occupiedChildInFolder(string $parentId, string $name)` | `?array` | Find a matching file or folder from one complete listing page; throws if a next page makes absence uncertain. |
+| `occupiedChildInFolder(string $parentId, string $name)` | `?array` | Find a matching file or folder from one complete listing page; throws if a next page makes absence uncertain. An empty parent ID means the account root. |
 | `fileIdIncludingIncomplete(string $path)` | `?string` | Find a file by path including uploads still processing; throws for ambiguous paths. |
 | `filePhaseAtPath(string $id, string $path)` | `?string` | Return the upload phase if the ID still identifies the file at that path. |
 | `fileIsCompleteAtPath(string $id, string $path)` | `bool` | Check that the file at a path has reached `PHASE_TYPE_COMPLETE`. |

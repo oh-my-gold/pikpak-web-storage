@@ -798,6 +798,20 @@ final class PackageIntegrationTest extends TestCase
         self::assertSame('year-folder-id', $adapter->ensureFolderBelowId('root-folder-id', '2025'));
     }
 
+    public function test_folder_can_be_created_directly_under_account_root(): void
+    {
+        $this->http->fake(function (Request $request) {
+            self::assertSame('POST', $request->method());
+            self::assertSame('https://api-drive.mypikpak.com/drive/v1/files', $request->url());
+            self::assertSame('', $request->data()['parent_id']);
+            self::assertSame('UShow', $request->data()['name']);
+            return $this->http->response(['file' => ['id' => 'account-root-folder', 'kind' => 'drive#folder']]);
+        });
+        $adapter = Storage::disk('pikpak')->getAdapter();
+
+        self::assertSame(['id' => 'account-root-folder', 'kind' => 'drive#folder'], $adapter->createFolderBelowId('', 'UShow'));
+    }
+
     public function test_permanent_cleanup_checks_identity_then_trashes_and_deletes(): void
     {
         $calls = [];

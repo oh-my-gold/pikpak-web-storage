@@ -216,9 +216,9 @@ adapter 的寫入與變更方法成功時回傳 `void`，失敗時拋出例外�
 | `getFileById($id, $query = [], $extraHeaders = [])` | `array` | 依穩定 ID 查詢 Drive 檔案或資料夾中繼資料。 |
 | `getFileByIdWithStatus($id, $query = [], $extraHeaders = [])` | `array` | 依穩定 ID 查詢 Drive 中繼資料並回傳 HTTP 狀態碼。 |
 | `createUploadSession($parentId, $name, $size, $sha1)` | `array` | 建立 resumable 上傳工作階段，回傳 `data` 和 HTTP `status`。 |
-| `createFolderBelowId($parentId, $name)` | `array` | 在指定資料夾 ID 下建立一個子資料夾並回傳雲端記錄。 |
+| `createFolderBelowId($parentId, $name)` | `array` | 在指定父資料夾 ID 下建立一個子資料夾並回傳雲端記錄；空 ID 代表帳號根目錄。 |
 | `listChildren($parentId, $includeIncomplete = false)` | `array` | 自動分頁讀取子項目；可選擇包含尚未完成的上傳。 |
-| `occupiedChildInFolder($parentId, $name)` | `?array` | 查詢直接子項目；若分頁未完成而無法確認不存在，會拋出例外。 |
+| `occupiedChildInFolder($parentId, $name)` | `?array` | 查詢直接子項目；空 ID 代表帳號根目錄。若分頁未完成而無法確認不存在，會拋出例外。 |
 | `fileIdIncludingIncomplete($path)` | `?string` | 依路徑查詢檔案 ID，包括仍在處理中的上傳；路徑重複時拋出例外。 |
 | `filePhaseAtPath($id, $path)` | `?string` | 只有 ID 仍對應此路徑時才回傳檔案處理階段。 |
 | `fileIsCompleteAtPath($id, $path)` | `bool` | 檢查檔案是否已達到 `PHASE_TYPE_COMPLETE`。 |

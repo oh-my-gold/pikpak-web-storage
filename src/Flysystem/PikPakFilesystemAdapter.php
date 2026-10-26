@@ -226,7 +226,7 @@ class PikPakFilesystemAdapter implements FilesystemAdapter
     }
 
     /** Validate an upload identity, then move it through trash into permanent deletion. */
-    public function permanentlyDeleteById(string $id): void
+    public function permanentlyDeleteById(string $id, array $expected = []): void
     {
         if (trim($id) === '') {
             throw new RuntimeException('Missing remote upload identity.');
@@ -243,6 +243,11 @@ class PikPakFilesystemAdapter implements FilesystemAdapter
         if (!is_array($file) || (string) ($file['id'] ?? '') !== $id
             || ($file['kind'] ?? null) !== 'drive#file' || !is_bool($file['trashed'] ?? null)) {
             throw new RuntimeException('Remote cleanup identity is unavailable.');
+        }
+        foreach (['parent_id', 'name'] as $field) {
+            if (isset($expected[$field]) && (string) ($file[$field] ?? '') !== (string) $expected[$field]) {
+                throw new RuntimeException('Remote cleanup target no longer belongs to this upload.');
+            }
         }
         if (!$file['trashed']) {
             $this->client->post(self::FILES . ':batchTrash', ['ids' => [$id]]);

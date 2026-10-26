@@ -790,7 +790,10 @@ final class PackageIntegrationTest extends TestCase
             $path = parse_url($request->url(), PHP_URL_PATH) ?: '';
             if ($request->method() === 'GET') {
                 $calls[] = 'get';
-                return $this->http->response(['id' => 'cleanup-id', 'kind' => 'drive#file', 'trashed' => false]);
+                return $this->http->response([
+                    'id' => 'cleanup-id', 'kind' => 'drive#file', 'trashed' => false,
+                    'parent_id' => 'parent-id', 'name' => 'upload.bin',
+                ]);
             }
             if ($request->method() === 'POST' && str_ends_with($path, ':batchTrash')) {
                 $calls[] = 'trash';
@@ -804,9 +807,34 @@ final class PackageIntegrationTest extends TestCase
         });
         $adapter = Storage::disk('pikpak')->getAdapter();
 
-        $adapter->permanentlyDeleteById('cleanup-id');
+        $adapter->permanentlyDeleteById('cleanup-id', ['parent_id' => 'parent-id', 'name' => 'upload.bin']);
 
         self::assertSame(['get', 'trash', 'delete'], $calls);
+    }
+
+    public function test_permanent_cleanup_rejects_a_replaced_upload_target(): void
+    {
+        $calls = [];
+        $this->http->fake(function (Request $request) use (&$calls) {
+            if ($request->method() === 'GET') {
+                $calls[] = 'get';
+                return $this->http->response([
+                    'id' => 'cleanup-id', 'kind' => 'drive#file', 'trashed' => false,
+                    'parent_id' => 'parent-id', 'name' => 'replacement.bin',
+                ]);
+            }
+            $calls[] = 'delete';
+            return $this->http->response([]);
+        });
+        $adapter = Storage::disk('pikpak')->getAdapter();
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Remote cleanup target no longer belongs to this upload.');
+        try {
+            $adapter->permanentlyDeleteById('cleanup-id', ['parent_id' => 'parent-id', 'name' => 'upload.bin']);
+        } finally {
+            self::assertSame(['get'], $calls);
+        }
     }
 
     private function policyConditions(string $encodedPolicy): array

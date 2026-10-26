@@ -238,7 +238,7 @@ The following lists every public operation declared by `PikPakFilesystemAdapter`
 | `ensureFolderPathAndGetId(string $path)` | `string` | `$adapter->ensureFolderPathAndGetId('photos/2026')`. Create missing folders and return the final ID. Account root has no object ID and raises an error. |
 | `ensureFolderBelowId(string $parentId, string $relativeDirectory)` | `string` | Create nested folders below a server-owned ID and return the final folder ID. |
 | `deleteById(string $id)` | `void` | `$adapter->deleteById($id)`. Delete a file/folder by its raw ID according to `use_trash`; invalidate folder cache. |
-| `permanentlyDeleteById(string $id)` | `void` | Verify a file ID, move it to trash when needed, then permanently delete it. Missing IDs are treated as already cleaned up. |
+| `permanentlyDeleteById(string $id, array $expected = [])` | `void` | Verify a file ID and optional `parent_id`/`name` identity, move it to trash when needed, then permanently delete it. Missing IDs are treated as already cleaned up. |
 | `lastUploadedFileId()` | `string` | `$adapter->lastUploadedFileId()`. Last upload's metadata ID, or `''` before an upload. Does not prove that bytes uploaded successfully. |
 | `lastUploadRequests()` | `array` | `$adapter->lastUploadRequests()`. Last upload's safe OSS request summaries, without credential values or signed query strings. |
 

@@ -226,7 +226,7 @@ adapter 的写入和变更方法成功时返回 `void`，失败时抛出异常�
 | `ensureFolderPathAndGetId($path)` | `string` | 创建缺失目录并返回最终目录 ID；账号根目录没有对象 ID。 |
 | `ensureFolderBelowId($parentId, $relativeDirectory)` | `string` | 在指定目录 ID 下创建多层目录并返回最终 ID。 |
 | `deleteById($id)` | `void` | 按原始 ID 删除文件或目录，行为由 `use_trash` 决定。 |
-| `permanentlyDeleteById($id)` | `void` | 校验文件 ID；必要时先移入回收站，再永久删除。不存在时视为已清理。 |
+| `permanentlyDeleteById($id, $expected = [])` | `void` | 校验文件 ID 和可选的 `parent_id`、`name`；必要时先移入回收站，再永久删除。不存在时视为已清理。 |
 | `lastUploadedFileId()` | `string` | 最近上传会话返回的文件元数据 ID；不代表文件字节已上传成功。 |
 | `lastUploadRequests()` | `array` | 最近上传的安全 OSS 请求摘要，不含凭据值和签名查询参数。 |
 

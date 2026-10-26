@@ -96,6 +96,36 @@ class PikPakFilesystemAdapter implements FilesystemAdapter
         return $this->children($parentId, $includeIncomplete);
     }
 
+    /** Return one provider page of children, for callers that expose page tokens. */
+    public function listChildrenPage(string $parentId, int $limit = 500, string $pageToken = '', bool $includeIncomplete = false): array
+    {
+        if ($limit < 1 || $limit > 500) {
+            throw new InvalidArgumentException('PikPak child page size must be between 1 and 500.');
+        }
+        $filters = ['trashed' => ['eq' => false]];
+        if (!$includeIncomplete) {
+            $filters['phase'] = ['eq' => 'PHASE_TYPE_COMPLETE'];
+        }
+        $query = [
+            'parent_id' => $parentId,
+            'limit' => $limit,
+            'thumbnail_size' => 'SIZE_SMALL',
+            'with_audit' => 'true',
+            'filters' => json_encode($filters, JSON_THROW_ON_ERROR),
+            'unzip_password' => '',
+        ];
+        if ($pageToken !== '') {
+            $query['page_token'] = $pageToken;
+        }
+
+        $page = $this->client->get(self::FILES, $query);
+        if (!isset($page['files']) || !is_array($page['files'])) {
+            throw new RuntimeException('PikPak returned an invalid file list.');
+        }
+
+        return $page;
+    }
+
     /** Return provider file details by stable ID. */
     public function getFileById(string $id, array $query = [], array $extraHeaders = []): array
     {
@@ -243,8 +273,9 @@ class PikPakFilesystemAdapter implements FilesystemAdapter
         }
         try {
             $payload = $this->getFileById($id);
-        } catch (PikPakApiException $exception) {
-            if ($exception->httpStatus === 404) {
+        } catch (Throwable $exception) {
+            $status = $exception->httpStatus ?? $exception->status ?? null;
+            if ((int) $status === 404) {
                 return;
             }
             throw $exception;
@@ -283,8 +314,26 @@ class PikPakFilesystemAdapter implements FilesystemAdapter
         }
 
         $target = $this->resolveShareTarget($path);
+
+        return $this->shareByIds([(string) $target['id']], $withPassword, $expirationDays);
+    }
+
+    /** Create one share link for one or more known file/folder IDs. */
+    public function shareByIds(array $fileIds, bool $withPassword = false, int $expirationDays = 7): array
+    {
+        if ($expirationDays !== -1 && $expirationDays < 1) {
+            throw new InvalidArgumentException('PikPak share expiration must be a positive number of days or -1.');
+        }
+        $fileIds = array_values(array_unique(array_filter(array_map(
+            static fn ($id): string => is_scalar($id) ? trim((string) $id) : '',
+            $fileIds,
+        ), static fn (string $id): bool => $id !== '')));
+        if ($fileIds === []) {
+            throw new InvalidArgumentException('At least one PikPak file ID is required.');
+        }
+
         $response = $this->client->post(self::SHARE, [
-            'file_ids' => [(string) $target['id']],
+            'file_ids' => $fileIds,
             'share_to' => $withPassword ? 'encryptedlink' : 'publiclink',
             'expiration_days' => $expirationDays,
             'pass_code_option' => $withPassword ? 'REQUIRED' : 'NOT_REQUIRED',
@@ -329,15 +378,7 @@ class PikPakFilesystemAdapter implements FilesystemAdapter
         $seen = [];
 
         do {
-            $query = [
-                'limit' => self::SHARE_PAGE_SIZE,
-                'thumbnail_size' => 'SIZE_SMALL',
-            ];
-            if ($token !== '') {
-                $query['page_token'] = $token;
-            }
-
-            $page = $this->client->get(self::SHARE_LIST, $query);
+            $page = $this->listSharesPage(self::SHARE_PAGE_SIZE, $token);
             $pageShares = $page['data'] ?? [];
             if (!is_array($pageShares)) {
                 throw new RuntimeException('PikPak share list response is invalid.');
@@ -359,6 +400,20 @@ class PikPakFilesystemAdapter implements FilesystemAdapter
         } while ($token !== '');
 
         return $shares;
+    }
+
+    /** Return one raw share page for applications that expose their own pagination. */
+    public function listSharesPage(int $limit = self::SHARE_PAGE_SIZE, string $pageToken = ''): array
+    {
+        if ($limit < 1 || $limit > self::SHARE_PAGE_SIZE) {
+            throw new InvalidArgumentException('PikPak share page size must be between 1 and 100.');
+        }
+        $query = ['limit' => $limit, 'thumbnail_size' => 'SIZE_SMALL'];
+        if ($pageToken !== '') {
+            $query['page_token'] = $pageToken;
+        }
+
+        return $this->client->get(self::SHARE_LIST, $query);
     }
 
     public function getUrl(string $path): string
@@ -923,24 +978,7 @@ class PikPakFilesystemAdapter implements FilesystemAdapter
         $token = '';
         $seen = [];
         do {
-            $filters = ['trashed' => ['eq' => false]];
-            if (!$includeIncomplete) {
-                $filters['phase'] = ['eq' => 'PHASE_TYPE_COMPLETE'];
-            }
-
-            $query = [
-                'parent_id' => $parentId,
-                'limit' => 500,
-                'thumbnail_size' => 'SIZE_SMALL',
-                'with_audit' => 'true',
-                'filters' => json_encode($filters, JSON_THROW_ON_ERROR),
-                'unzip_password' => '',
-            ];
-            if ($token !== '') {
-                $query['page_token'] = $token;
-            }
-
-            $page = $this->client->get(self::FILES, $query);
+            $page = $this->listChildrenPage($parentId, 500, $token, $includeIncomplete);
             foreach (($page['files'] ?? []) as $file) {
                 if (is_array($file) && !($file['trashed'] ?? false)) {
                     $items[] = $file;

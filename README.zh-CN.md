@@ -210,7 +210,9 @@ adapter 的写入和变更方法成功时返回 `void`，失败时抛出异常�
 | `getPresignedUploadUrl($params, $expiresInSeconds = 900)` | `string` | 为已创建会话的 `resumable.params` 签名单次 PUT URL。 |
 | `getBrowserUploadAuthorization($params, $contentMd5, $size)` | `array` | 返回 UShow 浏览器上传流程所需的签名 PUT 请求和 POST 表单。 |
 | `share($path, $withPassword = false, $expirationDays = 7)` | `array` | 创建分享并返回 PikPak 分享字段。 |
+| `shareByIds($fileIds, $withPassword = false, $expirationDays = 7)` | `array` | 为多个已知 ID 创建一个分享；受密码保护时由 PikPak 生成提取码。 |
 | `listShares()` | `array` | 自动分页并返回原始分享记录。 |
+| `listSharesPage($limit = 100, $pageToken = '')` | `array` | 返回单页分享记录，供应用自己管理分页。 |
 | `revokeShare($shareId)` | `void` | 撤销指定分享。 |
 | `sourceFileId($path)` | `?string` | 返回路径对应文件 ID；查找失败时返回 `null`。 |
 | `getFileById($id, $query = [], $extraHeaders = [])` | `array` | 按稳定 ID 查询 Drive 文件或目录元数据。 |
@@ -218,6 +220,7 @@ adapter 的写入和变更方法成功时返回 `void`，失败时抛出异常�
 | `createUploadSession($parentId, $name, $size, $sha1)` | `array` | 创建 resumable 上传会话，返回 `data` 和 HTTP `status`。 |
 | `createFolderBelowId($parentId, $name)` | `array` | 在指定父目录 ID 下创建一个子目录并返回云端记录；空 ID 表示账号根目录。 |
 | `listChildren($parentId, $includeIncomplete = false)` | `array` | 自动分页读取子项；可选择包含尚未完成的上传。 |
+| `listChildrenPage($parentId, $limit = 500, $pageToken = '', $includeIncomplete = false)` | `array` | 返回一页云端子项记录。 |
 | `occupiedChildInFolder($parentId, $name)` | `?array` | 查找直接子项；空 ID 表示账号根目录。若分页未完成而无法确认不存在，会抛出异常。 |
 | `fileIdIncludingIncomplete($path)` | `?string` | 按路径查询文件 ID，包括仍在处理中的上传；重名时抛出异常。 |
 | `filePhaseAtPath($id, $path)` | `?string` | 只有 ID 仍对应此路径时才返回文件处理阶段。 |

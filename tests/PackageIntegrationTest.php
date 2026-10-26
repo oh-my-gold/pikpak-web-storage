@@ -184,6 +184,24 @@ final class PackageIntegrationTest extends TestCase
         self::assertSame(['', 'next-page', '', 'next-page', ''], $seenPageTokens);
     }
 
+    public function test_adapter_can_fetch_one_raw_children_page(): void
+    {
+        $this->http->fake(function (Request $request) {
+            parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+            self::assertSame('parent-id', $query['parent_id']);
+            self::assertSame('125', $query['limit']);
+            self::assertSame('page-2', $query['page_token']);
+            self::assertSame('true', $query['with_audit']);
+            return $this->http->response(['files' => [['id' => 'file-2']], 'next_page_token' => 'page-3']);
+        });
+        $adapter = Storage::disk('pikpak')->getAdapter();
+
+        self::assertSame([
+            'files' => [['id' => 'file-2']],
+            'next_page_token' => 'page-3',
+        ], $adapter->listChildrenPage('parent-id', 125, 'page-2'));
+    }
+
     public function test_root_folder_and_visible_path_prefix_scope_remote_lookups(): void
     {
         $config = $this->app->make('config');
@@ -349,6 +367,33 @@ final class PackageIntegrationTest extends TestCase
                 'expiration_days' => 7,
                 'pass_code_option' => 'NOT_REQUIRED',
             ]);
+    }
+
+    public function test_share_by_ids_supports_multiple_files_and_generated_passwords(): void
+    {
+        $this->http->fake(function (Request $request) {
+            self::assertSame('POST', $request->method());
+            self::assertSame('https://api-drive.mypikpak.com/drive/v1/share', $request->url());
+            self::assertSame(['file-1', 'file-2'], $request->data()['file_ids']);
+            self::assertSame('encryptedlink', $request->data()['share_to']);
+            self::assertSame(30, $request->data()['expiration_days']);
+            self::assertSame('REQUIRED', $request->data()['pass_code_option']);
+            self::assertArrayNotHasKey('pass_code', $request->data());
+            return $this->http->response([
+                'share_id' => 'share-batch',
+                'share_url' => 'https://share.example.com/generated',
+                'pass_code' => 'auto-code',
+                'share_text' => 'generated link',
+            ]);
+        });
+        $adapter = Storage::disk('pikpak')->getAdapter();
+
+        self::assertSame([
+            'share_id' => 'share-batch',
+            'share_url' => 'https://share.example.com/generated',
+            'pass_code' => 'auto-code',
+            'share_text' => 'generated link',
+        ], $adapter->shareByIds(['file-1', '', 'file-2', 'file-1'], true, 30));
     }
 
     public function test_revoke_share_posts_the_share_id_to_the_batch_delete_endpoint(): void

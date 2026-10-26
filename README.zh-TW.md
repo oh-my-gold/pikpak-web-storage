@@ -210,7 +210,9 @@ adapter 的寫入與變更方法成功時回傳 `void`，失敗時拋出例外�
 | `getPresignedUploadUrl($params, $expiresInSeconds = 900)` | `string` | 為已建立工作階段的 `resumable.params` 簽署單次 PUT URL。 |
 | `getBrowserUploadAuthorization($params, $contentMd5, $size)` | `array` | 回傳 UShow 瀏覽器上傳流程需要的簽章 PUT 請求和 POST 表單。 |
 | `share($path, $withPassword = false, $expirationDays = 7)` | `array` | 建立分享並回傳 PikPak 分享欄位。 |
+| `shareByIds($fileIds, $withPassword = false, $expirationDays = 7)` | `array` | 為多個已知 ID 建立一個分享；受密碼保護時由 PikPak 產生密碼。 |
 | `listShares()` | `array` | 自動分頁並回傳原始分享記錄。 |
+| `listSharesPage($limit = 100, $pageToken = '')` | `array` | 回傳單頁分享記錄，供應用程式自行管理分頁。 |
 | `revokeShare($shareId)` | `void` | 撤銷指定分享。 |
 | `sourceFileId($path)` | `?string` | 回傳路徑對應的檔案 ID；查詢失敗時回傳 `null`。 |
 | `getFileById($id, $query = [], $extraHeaders = [])` | `array` | 依穩定 ID 查詢 Drive 檔案或資料夾中繼資料。 |
@@ -218,6 +220,7 @@ adapter 的寫入與變更方法成功時回傳 `void`，失敗時拋出例外�
 | `createUploadSession($parentId, $name, $size, $sha1)` | `array` | 建立 resumable 上傳工作階段，回傳 `data` 和 HTTP `status`。 |
 | `createFolderBelowId($parentId, $name)` | `array` | 在指定父資料夾 ID 下建立一個子資料夾並回傳雲端記錄；空 ID 代表帳號根目錄。 |
 | `listChildren($parentId, $includeIncomplete = false)` | `array` | 自動分頁讀取子項目；可選擇包含尚未完成的上傳。 |
+| `listChildrenPage($parentId, $limit = 500, $pageToken = '', $includeIncomplete = false)` | `array` | 回傳一頁雲端子項目記錄。 |
 | `occupiedChildInFolder($parentId, $name)` | `?array` | 查詢直接子項目；空 ID 代表帳號根目錄。若分頁未完成而無法確認不存在，會拋出例外。 |
 | `fileIdIncludingIncomplete($path)` | `?string` | 依路徑查詢檔案 ID，包括仍在處理中的上傳；路徑重複時拋出例外。 |
 | `filePhaseAtPath($id, $path)` | `?string` | 只有 ID 仍對應此路徑時才回傳檔案處理階段。 |

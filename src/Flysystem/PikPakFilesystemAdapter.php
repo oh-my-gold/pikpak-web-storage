@@ -106,6 +106,16 @@ class PikPakFilesystemAdapter implements FilesystemAdapter
         return $this->client->get(self::FILES . '/' . rawurlencode($id), $query, $extraHeaders);
     }
 
+    /** Fetch provider file details together with the HTTP response status. */
+    public function getFileByIdWithStatus(string $id, array $query = [], array $extraHeaders = []): array
+    {
+        if (trim($id) === '') {
+            throw new InvalidArgumentException('A PikPak file ID is required.');
+        }
+
+        return $this->client->getWithStatus(self::FILES . '/' . rawurlencode($id), $query, $extraHeaders);
+    }
+
     /** Create a resumable upload session for an existing parent folder. */
     public function createUploadSession(string $parentId, string $name, int $size, string $sha1): array
     {

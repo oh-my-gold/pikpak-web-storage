@@ -214,6 +214,7 @@ adapter 的写入和变更方法成功时返回 `void`，失败时抛出异常�
 | `revokeShare($shareId)` | `void` | 撤销指定分享。 |
 | `sourceFileId($path)` | `?string` | 返回路径对应文件 ID；查找失败时返回 `null`。 |
 | `getFileById($id, $query = [], $extraHeaders = [])` | `array` | 按稳定 ID 查询 Drive 文件或目录元数据。 |
+| `getFileByIdWithStatus($id, $query = [], $extraHeaders = [])` | `array` | 按稳定 ID 查询 Drive 元数据并返回 HTTP 状态码。 |
 | `createUploadSession($parentId, $name, $size, $sha1)` | `array` | 创建 resumable 上传会话，返回 `data` 和 HTTP `status`。 |
 | `createFolderBelowId($parentId, $name)` | `array` | 在指定目录 ID 下创建一个子目录并返回云端记录。 |
 | `listChildren($parentId, $includeIncomplete = false)` | `array` | 自动分页读取子项；可选择包含尚未完成的上传。 |

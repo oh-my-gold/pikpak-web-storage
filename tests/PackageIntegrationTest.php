@@ -635,6 +635,21 @@ final class PackageIntegrationTest extends TestCase
         self::assertSame(['file' => ['id' => 'created-id']], $response['data']);
     }
 
+    public function test_file_lookup_can_return_status_without_exposing_credentials(): void
+    {
+        $this->http->fake(function (Request $request) {
+            self::assertSame('GET', $request->method());
+            self::assertStringEndsWith('/files/file%2Fid', $request->url());
+            return $this->http->response(['id' => 'file/id', 'kind' => 'drive#file'], 200);
+        });
+        $adapter = Storage::disk('pikpak')->getAdapter();
+
+        self::assertSame([
+            'data' => ['id' => 'file/id', 'kind' => 'drive#file'],
+            'status' => 200,
+        ], $adapter->getFileByIdWithStatus('file/id'));
+    }
+
     public function test_get_presigned_upload_url_returns_a_signed_put_url(): void
     {
         $this->http->fake();

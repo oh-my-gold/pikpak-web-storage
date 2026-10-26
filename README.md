@@ -226,6 +226,7 @@ The following lists every public operation declared by `PikPakFilesystemAdapter`
 | `setVisibility(string $path, string $visibility)` | `void` | `$adapter->setVisibility('photos/a.txt', 'private')`. `public` raises a Flysystem exception. |
 | `sourceFileId(string $path)` | `?string` | `$adapter->sourceFileId('photos/a.txt')`. Returns/caches a path's file ID, or `null` on any lookup error. |
 | `getFileById(string $id, array $query = [], array $extraHeaders = [])` | `array` | Fetch Drive metadata by stable file or folder ID. |
+| `getFileByIdWithStatus(string $id, array $query = [], array $extraHeaders = [])` | `array` | Fetch Drive metadata and the HTTP response status by stable ID. |
 | `createUploadSession(string $parentId, string $name, int $size, string $sha1)` | `array` | Create a resumable file session; returns `data` and HTTP `status`. |
 | `createFolderBelowId(string $parentId, string $name)` | `array` | Create one folder below a server-owned folder ID and return its provider record. |
 | `listChildren(string $parentId, bool $includeIncomplete = false)` | `array` | Fetch all paginated child records; include incomplete uploads when requested. |

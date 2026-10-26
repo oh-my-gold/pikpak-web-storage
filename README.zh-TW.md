@@ -214,6 +214,7 @@ adapter 的寫入與變更方法成功時回傳 `void`，失敗時拋出例外�
 | `revokeShare($shareId)` | `void` | 撤銷指定分享。 |
 | `sourceFileId($path)` | `?string` | 回傳路徑對應的檔案 ID；查詢失敗時回傳 `null`。 |
 | `getFileById($id, $query = [], $extraHeaders = [])` | `array` | 依穩定 ID 查詢 Drive 檔案或資料夾中繼資料。 |
+| `getFileByIdWithStatus($id, $query = [], $extraHeaders = [])` | `array` | 依穩定 ID 查詢 Drive 中繼資料並回傳 HTTP 狀態碼。 |
 | `createUploadSession($parentId, $name, $size, $sha1)` | `array` | 建立 resumable 上傳工作階段，回傳 `data` 和 HTTP `status`。 |
 | `createFolderBelowId($parentId, $name)` | `array` | 在指定資料夾 ID 下建立一個子資料夾並回傳雲端記錄。 |
 | `listChildren($parentId, $includeIncomplete = false)` | `array` | 自動分頁讀取子項目；可選擇包含尚未完成的上傳。 |

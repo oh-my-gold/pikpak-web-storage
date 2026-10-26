@@ -18,7 +18,7 @@ Laravel 会通过包自动发现注册 `pikpak` 驱动。使用方需提供有�
 使用 Composer 安装：
 
 ```sh
-composer require oh-my-gold/pikpak-web-storage:0.9.0
+composer require oh-my-gold/pikpak-web-storage:^0.9.0
 ```
 
 Laravel 会自动发现 `PikPakWebStorageServiceProvider`。如果关闭了包自动发现，请将 `OhMyGold\PikPakWebStorage\PikPakWebStorageServiceProvider::class` 加入应用的 providers 列表。

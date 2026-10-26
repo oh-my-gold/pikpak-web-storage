@@ -18,7 +18,7 @@ The package registers the `pikpak` driver through Laravel package auto-discovery
 Install the Packagist package with Composer:
 
 ```sh
-composer require oh-my-gold/pikpak-web-storage:dev-master
+composer require oh-my-gold/pikpak-web-storage:0.9.0
 ```
 
 Laravel discovers `PikPakWebStorageServiceProvider` automatically. If package discovery is disabled, add `OhMyGold\PikPakWebStorage\PikPakWebStorageServiceProvider::class` to the application's providers list.

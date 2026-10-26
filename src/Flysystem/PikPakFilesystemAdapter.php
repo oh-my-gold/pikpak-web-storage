@@ -25,13 +25,13 @@ use League\Flysystem\UnableToRetrieveMetadata;
 use League\Flysystem\UnableToSetVisibility;
 use League\Flysystem\UnableToWriteFile;
 use League\Flysystem\Visibility;
-use OhMyGold\PikPakWebStorage\Http\PikPakApiClient;
+use OhMyGold\PikPakWebStorage\Http\PikPakApiClientContract;
 use OhMyGold\PikPakWebStorage\Exceptions\PikPakApiException;
 use OhMyGold\PikPakWebStorage\Upload\PikPakOssUploader;
 use RuntimeException;
 use Throwable;
 
-final class PikPakFilesystemAdapter implements FilesystemAdapter
+class PikPakFilesystemAdapter implements FilesystemAdapter
 {
     private const FILES = 'https://api-drive.mypikpak.com/drive/v1/files';
     private const SHARE = 'https://api-drive.mypikpak.com/drive/v1/share';
@@ -48,7 +48,7 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
     private readonly PikPakOssUploader $uploader;
 
     public function __construct(
-        private readonly PikPakApiClient $client,
+        private readonly PikPakApiClientContract $client,
         string $rootFolderId = '',
         string $keyPrefix = '',
         ?PikPakOssUploader $uploader = null,
@@ -82,6 +82,177 @@ final class PikPakFilesystemAdapter implements FilesystemAdapter
     public function getPresignedUploadUrl(array $params, int $expiresInSeconds = 900): string
     {
         return $this->uploader->getPresignedUploadUrl($params, $expiresInSeconds);
+    }
+
+    /** @return array{put: array{url: string, headers: array<string, string>}, post: array{url: string, fields: array<string, string>}} */
+    public function getBrowserUploadAuthorization(array $params, string $contentMd5, int $size): array
+    {
+        return $this->uploader->getBrowserUploadAuthorization($params, $contentMd5, $size);
+    }
+
+    /** Return all visible children, optionally including files still processing. */
+    public function listChildren(string $parentId, bool $includeIncomplete = false): array
+    {
+        return $this->children($parentId, $includeIncomplete);
+    }
+
+    /** Return provider file details by stable ID. */
+    public function getFileById(string $id, array $query = [], array $extraHeaders = []): array
+    {
+        if (trim($id) === '') {
+            throw new InvalidArgumentException('A PikPak file ID is required.');
+        }
+
+        return $this->client->get(self::FILES . '/' . rawurlencode($id), $query, $extraHeaders);
+    }
+
+    /** Create a resumable upload session for an existing parent folder. */
+    public function createUploadSession(string $parentId, string $name, int $size, string $sha1): array
+    {
+        return $this->client->postWithStatus(self::FILES, [
+            'kind' => 'drive#file',
+            'name' => $name,
+            'size' => $size,
+            'hash' => strtoupper($sha1),
+            'upload_type' => 'UPLOAD_TYPE_RESUMABLE',
+            'objProvider' => ['provider' => 'UPLOAD_TYPE_UNKNOWN'],
+            'parent_id' => $parentId,
+            'folder_type' => 'NORMAL',
+        ]);
+    }
+
+    /** Create a folder directly below a known parent ID and return its provider record. */
+    public function createFolderBelowId(string $parentId, string $name): array
+    {
+        if (trim($parentId) === '' || trim($name) === '') {
+            throw new InvalidArgumentException('A PikPak parent ID and folder name are required.');
+        }
+        $response = $this->client->post(self::FILES, [
+            'kind' => 'drive#folder',
+            'parent_id' => $parentId,
+            'name' => $name,
+        ]);
+        $folder = $response['file'] ?? $response;
+        if (!is_array($folder) || empty($folder['id'])) {
+            throw new RuntimeException('PikPak folder creation failed.');
+        }
+
+        return $folder;
+    }
+
+    /** Find an occupied direct child without silently treating a partial page as absence. */
+    public function occupiedChildInFolder(string $parentId, string $name): ?array
+    {
+        if (trim($parentId) === '' || trim($name) === '') {
+            throw new InvalidArgumentException('A PikPak parent ID and child name are required.');
+        }
+        $page = $this->client->get(self::FILES, [
+            'parent_id' => $parentId,
+            'limit' => 500,
+            'thumbnail_size' => 'SIZE_SMALL',
+            'with_audit' => 'true',
+            'filters' => json_encode(['trashed' => ['eq' => false]], JSON_THROW_ON_ERROR),
+        ]);
+        if (!isset($page['files']) || !is_array($page['files'])) {
+            throw new RuntimeException('PikPak returned an invalid upload destination listing.');
+        }
+        foreach ($page['files'] as $child) {
+            if (is_array($child) && !($child['trashed'] ?? false)
+                && (string) ($child['name'] ?? '') === $name
+                && in_array($child['kind'] ?? '', ['drive#file', 'drive#folder'], true)) {
+                return $child;
+            }
+        }
+        if (!empty($page['next_page_token'])) {
+            throw new RuntimeException('PikPak upload destination is too large to verify in one request.');
+        }
+
+        return null;
+    }
+
+    /** Return an incomplete or complete file ID at a path, rejecting ambiguous names. */
+    public function fileIdIncludingIncomplete(string $path): ?string
+    {
+        $parentId = $this->parentId($path);
+        $name = $this->basename($path);
+        $found = null;
+        foreach ($this->children($parentId, true) as $child) {
+            if (($child['kind'] ?? '') !== 'drive#file' || (string) ($child['name'] ?? '') !== $name) {
+                continue;
+            }
+            if ($found !== null) {
+                throw new RuntimeException('PikPak path is ambiguous.');
+            }
+            $found = (string) ($child['id'] ?? '');
+        }
+
+        return $found !== '' ? $found : null;
+    }
+
+    /** Return the phase when the ID still names the requested path. */
+    public function filePhaseAtPath(string $id, string $path): ?string
+    {
+        $payload = $this->getFileById($id);
+        $file = $payload['file'] ?? $payload;
+        if (!is_array($file) || ($file['kind'] ?? '') !== 'drive#file' || ($file['trashed'] ?? false)
+            || (string) ($file['parent_id'] ?? '') !== $this->parentId($path)
+            || (string) ($file['name'] ?? '') !== $this->basename($path)) {
+            return null;
+        }
+
+        return (string) ($file['phase'] ?? '');
+    }
+
+    public function fileIsCompleteAtPath(string $id, string $path): bool
+    {
+        return $this->filePhaseAtPath($id, $path) === 'PHASE_TYPE_COMPLETE';
+    }
+
+    /** Create nested relative directories beneath a server-owned folder ID. */
+    public function ensureFolderBelowId(string $parentId, string $relativeDirectory): string
+    {
+        if (trim($parentId) === '') {
+            throw new InvalidArgumentException('A PikPak parent folder ID is required.');
+        }
+        foreach ($this->segments($relativeDirectory) as $segment) {
+            $folder = $this->findChild($parentId, $segment, 'drive#folder');
+            if (!$folder) {
+                $folder = $this->createFolderBelowId($parentId, $segment);
+            }
+            $parentId = (string) $folder['id'];
+        }
+
+        return $parentId;
+    }
+
+    /** Validate an upload identity, then move it through trash into permanent deletion. */
+    public function permanentlyDeleteById(string $id): void
+    {
+        if (trim($id) === '') {
+            throw new RuntimeException('Missing remote upload identity.');
+        }
+        try {
+            $payload = $this->getFileById($id);
+        } catch (PikPakApiException $exception) {
+            if ($exception->httpStatus === 404) {
+                return;
+            }
+            throw $exception;
+        }
+        $file = $payload['file'] ?? $payload;
+        if (!is_array($file) || (string) ($file['id'] ?? '') !== $id
+            || ($file['kind'] ?? null) !== 'drive#file' || !is_bool($file['trashed'] ?? null)) {
+            throw new RuntimeException('Remote cleanup identity is unavailable.');
+        }
+        if (!$file['trashed']) {
+            $this->client->post(self::FILES . ':batchTrash', ['ids' => [$id]]);
+        }
+        $this->client->post(self::FILES . ':batchDelete', ['ids' => [$id]]);
+        foreach ($this->cache as $key => $cachedId) {
+            if ($cachedId === $id) {
+                unset($this->cache[$key]);
+            }
+        }
     }
 
     /**

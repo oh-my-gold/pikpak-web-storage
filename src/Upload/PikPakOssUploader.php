@@ -47,6 +47,65 @@ final class PikPakOssUploader
         return 'https://' . $host . $this->encodedPath($credentials['key']) . '?' . $query;
     }
 
+    /**
+     * Build the PUT and POST authorizations used by UShow's browser uploader.
+     *
+     * @return array{put: array{url: string, headers: array<string, string>}, post: array{url: string, fields: array<string, string>}}
+     */
+    public function getBrowserUploadAuthorization(array $params, string $contentMd5, int $size): array
+    {
+        if ($size < 0 || trim($contentMd5) === '') {
+            throw new InvalidArgumentException('PikPak browser upload size and MD5 are required.');
+        }
+
+        $credentials = $this->credentials($params);
+        $date = gmdate('Ymd\\THis\\Z');
+        $canonicalHeaders = "x-oss-date:{$date}\nx-oss-security-token:{$credentials['security_token']}";
+        $canonicalResource = '/' . $credentials['bucket'] . '/' . $credentials['key'];
+        $stringToSign = "PUT\n{$contentMd5}\n" . self::CONTENT_TYPE . "\n{$date}\n{$canonicalHeaders}\n{$canonicalResource}";
+        $putSignature = base64_encode(hash_hmac('sha1', $stringToSign, $credentials['access_key_secret'], true));
+        $host = $credentials['bucket'] . '.' . $credentials['endpoint'];
+
+        $conditions = [
+            ['bucket' => $credentials['bucket']],
+            ['eq', '$key', $credentials['key']],
+            ['eq', '$success_action_status', '201'],
+            ['content-length-range', $size, $size],
+        ];
+        $policyJson = json_encode([
+            'expiration' => gmdate('Y-m-d\\TH:i:s.000\\Z', time() + 900),
+            'conditions' => $conditions,
+        ], JSON_UNESCAPED_SLASHES);
+        if (!is_string($policyJson)) {
+            throw new RuntimeException('PikPak browser upload policy could not be created.');
+        }
+        $policy = base64_encode($policyJson);
+
+        return [
+            'put' => [
+                'url' => 'https://' . $host . $this->encodedPath($credentials['key']),
+                'headers' => [
+                    'Authorization' => 'OSS ' . $credentials['access_key_id'] . ':' . $putSignature,
+                    'x-oss-date' => $date,
+                    'Content-Type' => self::CONTENT_TYPE,
+                    'Content-MD5' => $contentMd5,
+                    'x-oss-security-token' => $credentials['security_token'],
+                ],
+            ],
+            'post' => [
+                'url' => 'https://' . $host . '/',
+                'fields' => [
+                    'key' => $credentials['key'],
+                    'policy' => $policy,
+                    'OSSAccessKeyId' => $credentials['access_key_id'],
+                    'Signature' => base64_encode(hash_hmac('sha1', $policy, $credentials['access_key_secret'], true)),
+                    'x-oss-security-token' => $credentials['security_token'],
+                    'success_action_status' => '201',
+                ],
+            ],
+        ];
+    }
+
     /** @param resource $stream */
     public function upload(array $params, $stream, int $size): void
     {

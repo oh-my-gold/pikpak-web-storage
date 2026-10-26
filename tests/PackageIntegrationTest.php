@@ -615,6 +615,26 @@ final class PackageIntegrationTest extends TestCase
         }
     }
 
+    public function test_api_client_can_return_status_and_send_extra_headers(): void
+    {
+        $this->http->fake(function (Request $request) {
+            self::assertSame('POST', $request->method());
+            self::assertTrue($request->hasHeader('x-integration-context', 'ushow-upload'));
+            self::assertSame(['name' => 'example.jpg'], $request->data());
+
+            return $this->http->response(['file' => ['id' => 'created-id']], 201);
+        });
+
+        $response = (new PikPakApiClient('test-token'))->postWithStatus(
+            'https://api-drive.mypikpak.com/drive/v1/files',
+            ['name' => 'example.jpg'],
+            ['x-integration-context' => 'ushow-upload'],
+        );
+
+        self::assertSame(201, $response['status']);
+        self::assertSame(['file' => ['id' => 'created-id']], $response['data']);
+    }
+
     public function test_get_presigned_upload_url_returns_a_signed_put_url(): void
     {
         $this->http->fake();
@@ -688,5 +708,123 @@ final class PackageIntegrationTest extends TestCase
             'access_key_id' => 'temporary-access-key',
             'access_key_secret' => 'temporary-secret',
         ]);
+    }
+
+    public function test_browser_upload_authorization_returns_put_and_post_requests(): void
+    {
+        $this->http->fake();
+        $adapter = Storage::disk('pikpak')->getAdapter();
+        $params = [
+            'endpoint' => 'oss.example.com',
+            'bucket' => 'pikpak-bucket',
+            'key' => 'uploads/my photo.txt',
+            'access_key_id' => 'temporary-access-key',
+            'access_key_secret' => 'temporary-secret',
+            'security_token' => 'temporary-session-token',
+        ];
+        $md5 = base64_encode(md5('upload', true));
+
+        $authorization = $adapter->getBrowserUploadAuthorization($params, $md5, 6);
+
+        self::assertSame('https://pikpak-bucket.oss.example.com/uploads/my%20photo.txt', $authorization['put']['url']);
+        self::assertSame($md5, $authorization['put']['headers']['Content-MD5']);
+        self::assertStringStartsWith('OSS temporary-access-key:', $authorization['put']['headers']['Authorization']);
+        self::assertSame('https://pikpak-bucket.oss.example.com/', $authorization['post']['url']);
+        self::assertSame('uploads/my photo.txt', $authorization['post']['fields']['key']);
+        self::assertSame('temporary-session-token', $authorization['post']['fields']['x-oss-security-token']);
+        self::assertSame([
+            'bucket' => 'pikpak-bucket',
+            'key' => 'uploads/my photo.txt',
+            'success_action_status' => '201',
+            'size_range' => [6, 6],
+        ], $this->policyConditions($authorization['post']['fields']['policy']));
+        $this->http->assertNothingSent();
+    }
+
+    public function test_incomplete_file_helpers_validate_identity_and_list_all_phases(): void
+    {
+        $this->http->fake(function (Request $request) {
+            $path = parse_url($request->url(), PHP_URL_PATH) ?: '';
+            if ($request->method() === 'GET' && str_ends_with($path, '/files')) {
+                parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+                self::assertStringNotContainsString('phase', (string) ($query['filters'] ?? ''));
+                return $this->http->response(['files' => [
+                    ['id' => 'incomplete-id', 'name' => 'video.mp4', 'kind' => 'drive#file', 'phase' => 'PHASE_TYPE_PROCESSING'],
+                ]]);
+            }
+            if ($request->method() === 'GET' && str_ends_with($path, '/files/incomplete-id')) {
+                return $this->http->response(['id' => 'incomplete-id', 'name' => 'video.mp4', 'kind' => 'drive#file', 'parent_id' => '', 'phase' => 'PHASE_TYPE_PROCESSING']);
+            }
+            return $this->http->response(['error' => 'unexpected request'], 500);
+        });
+        $adapter = Storage::disk('pikpak')->getAdapter();
+
+        self::assertSame('incomplete-id', $adapter->fileIdIncludingIncomplete('video.mp4'));
+        self::assertSame('PHASE_TYPE_PROCESSING', $adapter->filePhaseAtPath('incomplete-id', 'video.mp4'));
+        self::assertFalse($adapter->fileIsCompleteAtPath('incomplete-id', 'video.mp4'));
+    }
+
+    public function test_folder_can_be_created_below_a_known_id(): void
+    {
+        $this->http->fake(function (Request $request) {
+            $path = parse_url($request->url(), PHP_URL_PATH) ?: '';
+            if ($request->method() === 'GET' && str_ends_with($path, '/files')) {
+                return $this->http->response(['files' => []]);
+            }
+            if ($request->method() === 'POST' && str_ends_with($path, '/files')) {
+                self::assertSame('root-folder-id', $request->data()['parent_id']);
+                self::assertSame('2025', $request->data()['name']);
+                return $this->http->response(['file' => ['id' => 'year-folder-id', 'kind' => 'drive#folder']]);
+            }
+            return $this->http->response(['error' => 'unexpected request'], 500);
+        });
+        $adapter = Storage::disk('pikpak')->getAdapter();
+
+        self::assertSame('year-folder-id', $adapter->ensureFolderBelowId('root-folder-id', '2025'));
+    }
+
+    public function test_permanent_cleanup_checks_identity_then_trashes_and_deletes(): void
+    {
+        $calls = [];
+        $this->http->fake(function (Request $request) use (&$calls) {
+            $path = parse_url($request->url(), PHP_URL_PATH) ?: '';
+            if ($request->method() === 'GET') {
+                $calls[] = 'get';
+                return $this->http->response(['id' => 'cleanup-id', 'kind' => 'drive#file', 'trashed' => false]);
+            }
+            if ($request->method() === 'POST' && str_ends_with($path, ':batchTrash')) {
+                $calls[] = 'trash';
+                return $this->http->response([]);
+            }
+            if ($request->method() === 'POST' && str_ends_with($path, ':batchDelete')) {
+                $calls[] = 'delete';
+                return $this->http->response([]);
+            }
+            return $this->http->response(['error' => 'unexpected request'], 500);
+        });
+        $adapter = Storage::disk('pikpak')->getAdapter();
+
+        $adapter->permanentlyDeleteById('cleanup-id');
+
+        self::assertSame(['get', 'trash', 'delete'], $calls);
+    }
+
+    private function policyConditions(string $encodedPolicy): array
+    {
+        $policy = json_decode((string) base64_decode($encodedPolicy, true), true, 512, JSON_THROW_ON_ERROR);
+        $conditions = $policy['conditions'] ?? [];
+        $sizeRange = [];
+        foreach ($conditions as $condition) {
+            if (is_array($condition) && ($condition[0] ?? null) === 'content-length-range') {
+                $sizeRange = [(int) $condition[1], (int) $condition[2]];
+            }
+        }
+
+        return [
+            'bucket' => $conditions[0]['bucket'] ?? null,
+            'key' => $conditions[1][2] ?? null,
+            'success_action_status' => $conditions[2][2] ?? null,
+            'size_range' => $sizeRange,
+        ];
     }
 }

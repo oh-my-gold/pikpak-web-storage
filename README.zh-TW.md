@@ -122,6 +122,16 @@ $bytes = $disk->size('@id/REMOTE_FILE_ID');
 
 `getPresignedUploadUrl()` 使用應用程式已建立的上傳工作階段中的 `resumable.params` 簽署 PUT URL，並以字串回傳。此方法不會建立 PikPak 檔案或上傳工作階段。預設有效期為 15 分鐘，可設定為 1 到 3600 秒。
 
+`getBrowserUploadAuthorization()` 適用於 UShow 目前的瀏覽器上傳回退流程：回傳帶簽章標頭的 PUT 請求，以及帶簽章表單欄位的 POST 請求。參數中的 MD5 必須使用 Base64 編碼，大小必須是精確位元組數。此方法不會建立上傳工作階段；工作階段 ID、檔案 ID 和完成流程仍由應用程式管理。回傳的授權資訊應視為短效憑證。
+
+```php
+$uploadParams = $metadata['resumable']['params'];
+$md5 = base64_encode(md5($contents, true));
+$authorization = $adapter->getBrowserUploadAuthorization($uploadParams, $md5, strlen($contents));
+
+return response()->json(['upload' => $authorization]);
+```
+
 UShow 可保留現有的後端工作階段建立流程及 `fileId`、`sessionId` 管理，再由後端產生並回傳瀏覽器上傳 URL。若 UShow 已註冊自己的 `pikpak` 驅動程式，可直接建立本套件的 adapter：
 
 ```php
@@ -198,20 +208,31 @@ adapter 的寫入與變更方法成功時回傳 `void`，失敗時拋出例外�
 | --- | --- | --- |
 | `getUrl($path)` | `string` | PikPak 目前的內容連結。 |
 | `getPresignedUploadUrl($params, $expiresInSeconds = 900)` | `string` | 為已建立工作階段的 `resumable.params` 簽署單次 PUT URL。 |
+| `getBrowserUploadAuthorization($params, $contentMd5, $size)` | `array` | 回傳 UShow 瀏覽器上傳流程需要的簽章 PUT 請求和 POST 表單。 |
 | `share($path, $withPassword = false, $expirationDays = 7)` | `array` | 建立分享並回傳 PikPak 分享欄位。 |
 | `listShares()` | `array` | 自動分頁並回傳原始分享記錄。 |
 | `revokeShare($shareId)` | `void` | 撤銷指定分享。 |
 | `sourceFileId($path)` | `?string` | 回傳路徑對應的檔案 ID；查詢失敗時回傳 `null`。 |
+| `getFileById($id, $query = [], $extraHeaders = [])` | `array` | 依穩定 ID 查詢 Drive 檔案或資料夾中繼資料。 |
+| `createUploadSession($parentId, $name, $size, $sha1)` | `array` | 建立 resumable 上傳工作階段，回傳 `data` 和 HTTP `status`。 |
+| `createFolderBelowId($parentId, $name)` | `array` | 在指定資料夾 ID 下建立一個子資料夾並回傳雲端記錄。 |
+| `listChildren($parentId, $includeIncomplete = false)` | `array` | 自動分頁讀取子項目；可選擇包含尚未完成的上傳。 |
+| `occupiedChildInFolder($parentId, $name)` | `?array` | 查詢直接子項目；若分頁未完成而無法確認不存在，會拋出例外。 |
+| `fileIdIncludingIncomplete($path)` | `?string` | 依路徑查詢檔案 ID，包括仍在處理中的上傳；路徑重複時拋出例外。 |
+| `filePhaseAtPath($id, $path)` | `?string` | 只有 ID 仍對應此路徑時才回傳檔案處理階段。 |
+| `fileIsCompleteAtPath($id, $path)` | `bool` | 檢查檔案是否已達到 `PHASE_TYPE_COMPLETE`。 |
 | `pathOccupied($path)` | `bool` | 檢查是否有同名檔案或目錄，包括未完成的上傳。 |
 | `pathIsUniqueTo($path, $id)` | `bool` | 檢查唯一同名項目是否為指定檔案 ID。 |
 | `ensureFolderPathAndGetId($path)` | `string` | 建立缺少的目錄並回傳最終目錄 ID；帳號根目錄沒有物件 ID。 |
+| `ensureFolderBelowId($parentId, $relativeDirectory)` | `string` | 在指定目錄 ID 下建立多層目錄並回傳最終 ID。 |
 | `deleteById($id)` | `void` | 依原始 ID 刪除檔案或目錄，行為由 `use_trash` 決定。 |
+| `permanentlyDeleteById($id)` | `void` | 驗證檔案 ID；需要時先移至回收桶，再永久刪除。不存在時視為已清理。 |
 | `lastUploadedFileId()` | `string` | 最近上傳工作階段回傳的檔案中繼資料 ID；不代表檔案內容已上傳成功。 |
 | `lastUploadRequests()` | `array` | 最近上傳的安全 OSS 請求摘要，不含憑證值和簽署查詢參數。 |
 
 `sourceFileId()` 使用 adapter 執行個體內的檔案 ID 快取；Laravel 資料夾快取 TTL 不會影響此快取。`deleteById()` 接受原始 ID，因此可存取設定根目錄以外的物件。`lastUploadedFileId()` 與 `lastUploadRequests()` 會在上傳開始時重設。`lastUploadRequests()` 可用於排除問題，但不含簽署 URL 或臨時憑證。
 
-直接建立 adapter 時，建構參數依序為：`PikPakApiClient $client`、`string $rootFolderId = ''`、`string $keyPrefix = ''`、`?PikPakOssUploader $uploader = null`、`string $rootFolderPath = ''`、`?Illuminate\Contracts\Cache\Repository $folderCache = null`、`int $folderCacheTtl = 3600`、`bool $useTrash = true`。`keyPrefix` 對應磁碟的 `path_prefix`；傳入空 uploader 會使用內建 OSS uploader；空快取則使用執行個體記憶體。`PikPakApiClient` 接受 Bearer Token。
+直接建立 adapter 時，第一個參數接受 `PikPakApiClientContract`。可直接使用內建 `PikPakApiClient`；應用程式也可實作此 contract，在使用套件檔案系統和 Drive 方法時保留自有憑證取得與 API 錯誤處理。其餘建構參數依序為：`string $rootFolderId = ''`、`string $keyPrefix = ''`、`?PikPakOssUploader $uploader = null`、`string $rootFolderPath = ''`、`?Illuminate\Contracts\Cache\Repository $folderCache = null`、`int $folderCacheTtl = 3600`、`bool $useTrash = true`。
 
 ## 錯誤處理
 

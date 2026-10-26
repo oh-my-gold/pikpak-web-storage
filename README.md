@@ -203,6 +203,7 @@ The following lists every public operation declared by `PikPakFilesystemAdapter`
 | --- | --- | --- |
 | `getUrl(string $path)` | `string` | `$adapter->getUrl('photos/a.txt')`. Current PikPak content link; the expiry is chosen by PikPak. |
 | `getPresignedUploadUrl(array $params, int $expiresInSeconds = 900)` | `string` | Sign an existing upload session's `resumable.params` into a browser PUT URL. Valid for 1–3600 seconds. |
+| `getBrowserUploadAuthorization(array $params, string $contentMd5, int $size)` | `array` | Return signed PUT headers and a signed POST form for browser upload clients that need UShow's POST-then-PUT fallback. |
 | `share(string $path, bool $withPassword = false, int $expirationDays = 7)` | `array` | Create a share link for a file or folder. Returns `share_id`, `share_url`, `pass_code`, and `share_text`. PikPak generates protected-link codes. |
 | `listShares()` | `array` | Return all raw share records, automatically following pages. |
 | `revokeShare(string $shareId)` | `void` | Revoke one share using its ID. |
@@ -224,16 +225,36 @@ The following lists every public operation declared by `PikPakFilesystemAdapter`
 | `visibility(string $path)` | `FileAttributes` | `$adapter->visibility('photos/a.txt')->visibility()` yields `'private'`. |
 | `setVisibility(string $path, string $visibility)` | `void` | `$adapter->setVisibility('photos/a.txt', 'private')`. `public` raises a Flysystem exception. |
 | `sourceFileId(string $path)` | `?string` | `$adapter->sourceFileId('photos/a.txt')`. Returns/caches a path's file ID, or `null` on any lookup error. |
+| `getFileById(string $id, array $query = [], array $extraHeaders = [])` | `array` | Fetch Drive metadata by stable file or folder ID. |
+| `createUploadSession(string $parentId, string $name, int $size, string $sha1)` | `array` | Create a resumable file session; returns `data` and HTTP `status`. |
+| `createFolderBelowId(string $parentId, string $name)` | `array` | Create one folder below a server-owned folder ID and return its provider record. |
+| `listChildren(string $parentId, bool $includeIncomplete = false)` | `array` | Fetch all paginated child records; include incomplete uploads when requested. |
+| `occupiedChildInFolder(string $parentId, string $name)` | `?array` | Find a matching file or folder from one complete listing page; throws if a next page makes absence uncertain. |
+| `fileIdIncludingIncomplete(string $path)` | `?string` | Find a file by path including uploads still processing; throws for ambiguous paths. |
+| `filePhaseAtPath(string $id, string $path)` | `?string` | Return the upload phase if the ID still identifies the file at that path. |
+| `fileIsCompleteAtPath(string $id, string $path)` | `bool` | Check that the file at a path has reached `PHASE_TYPE_COMPLETE`. |
 | `pathOccupied(string $path)` | `bool` | `$adapter->pathOccupied('photos/a.txt')`. Checks any same-name file/folder, including incomplete uploads. |
 | `pathIsUniqueTo(string $path, string $id)` | `bool` | `$adapter->pathIsUniqueTo('photos/a.txt', $id)`. True only for exactly one matching entry that is a file with that ID; includes incomplete entries. |
 | `ensureFolderPathAndGetId(string $path)` | `string` | `$adapter->ensureFolderPathAndGetId('photos/2026')`. Create missing folders and return the final ID. Account root has no object ID and raises an error. |
+| `ensureFolderBelowId(string $parentId, string $relativeDirectory)` | `string` | Create nested folders below a server-owned ID and return the final folder ID. |
 | `deleteById(string $id)` | `void` | `$adapter->deleteById($id)`. Delete a file/folder by its raw ID according to `use_trash`; invalidate folder cache. |
+| `permanentlyDeleteById(string $id)` | `void` | Verify a file ID, move it to trash when needed, then permanently delete it. Missing IDs are treated as already cleaned up. |
 | `lastUploadedFileId()` | `string` | `$adapter->lastUploadedFileId()`. Last upload's metadata ID, or `''` before an upload. Does not prove that bytes uploaded successfully. |
 | `lastUploadRequests()` | `array` | `$adapter->lastUploadRequests()`. Last upload's safe OSS request summaries, without credential values or signed query strings. |
 
 ### Get a browser upload URL
 
 `getPresignedUploadUrl()` signs the `resumable.params` from an upload session that your application has already created. It returns a single PUT URL as a string; it does not create the PikPak file or upload session. The default expiry is 15 minutes. You can pass an expiry from 1 to 3600 seconds.
+
+`getBrowserUploadAuthorization()` preserves clients that use UShow's browser transfer fallback: it returns both a PUT URL with signed headers and a POST URL with signed form fields. Pass the MD5 in base64 and the exact byte size. It does not create the upload session. Keep the existing server-side session and completion tracking; treat the returned authorization as short-lived.
+
+```php
+$uploadParams = $metadata['resumable']['params'];
+$md5 = base64_encode(md5($contents, true));
+$authorization = $adapter->getBrowserUploadAuthorization($uploadParams, $md5, strlen($contents));
+
+return response()->json(['upload' => $authorization]);
+```
 
 For UShow, keep the existing backend flow that creates the PikPak upload session and tracks its file and session IDs, then return the signed URL to the browser. The package can be used directly if UShow already registers its own `pikpak` driver:
 
@@ -348,6 +369,8 @@ $contents = $filesystem->read('example.txt');
 
 `keyPrefix` has the same meaning as the disk's `path_prefix`. `rootFolderId` is the legacy optional starting ID, `rootFolderPath` selects the path relative to it, and a null `uploader` selects the built-in OSS uploader. A null `folderCache` selects instance memory.
 
+The adapter accepts `PikPakApiClientContract`. Implement this interface when the application needs to keep its own per-account token lookup or API error translation while using the package's filesystem and Drive helpers. The interface provides `cacheIdentity()`, `get()`, `getWithStatus()`, `post()`, `postWithStatus()`, and `patch()`.
+
 ## Supporting classes
 
 These lower-level classes are normally called by the driver. This reference includes every public method declared by the package, including its integration helpers.
@@ -355,20 +378,25 @@ These lower-level classes are normally called by the driver. This reference incl
 | Class | Public constructor / method | Return and purpose |
 | --- | --- | --- |
 | `Http\PikPakApiClient` | `__construct(string $token)` | Create a Drive API client. A non-empty Bearer token is required. |
-| `Http\PikPakApiClient` | `get(string $url, array $query = [])` | `array`; issue a Drive API GET with query parameters. |
-| `Http\PikPakApiClient` | `post(string $url, array $body = [])` | `array`; issue a Drive API POST with a JSON body. |
-| `Http\PikPakApiClient` | `patch(string $url, array $body = [])` | `array`; issue a Drive API PATCH with a JSON body. |
+| `Http\PikPakApiClientContract` | `cacheIdentity()` | `string`; credential hash used to isolate caches. |
+| `Http\PikPakApiClientContract` | `get(string $url, array $query = [], array $extraHeaders = [])` | `array`; issue a Drive API GET with query parameters. |
+| `Http\PikPakApiClientContract` | `getWithStatus(string $url, array $query = [], array $extraHeaders = [])` | `array{data: array, status: int}`; GET response data and HTTP status. |
+| `Http\PikPakApiClientContract` | `post(string $url, array $body = [], array $extraHeaders = [])` | `array`; issue a Drive API POST with a JSON body. |
+| `Http\PikPakApiClientContract` | `postWithStatus(string $url, array $body = [], array $extraHeaders = [])` | `array{data: array, status: int}`; POST response data and HTTP status. |
+| `Http\PikPakApiClientContract` | `patch(string $url, array $body = [], array $extraHeaders = [])` | `array`; issue a Drive API PATCH with a JSON body. |
 | `Http\PikPakApiClient` | `cacheIdentity()` | `string`; credential hash used to isolate caches. |
-| `Flysystem\FolderIdResolver` | `__construct(PikPakApiClient $client, ?Repository $cache = null, int $ttl = 3600)` | Create a resolver. `Repository` is the Illuminate cache contract; TTL must be positive. |
+| `Flysystem\FolderIdResolver` | `__construct(PikPakApiClientContract $client, ?Repository $cache = null, int $ttl = 3600)` | Create a resolver. `Repository` is the Illuminate cache contract; TTL must be positive. |
 | `Flysystem\FolderIdResolver` | `resolve(array $segments, string $parentId = '', bool $create = false)` | `string`; resolve folder-name segments from a parent ID; optionally create missing folders. `resolve([])` returns the supplied parent ID, including `''` for the account root. |
 | `Flysystem\FolderIdResolver` | `find(string $parentId, string $name)` | `?string`; look up one child folder; `null` if missing, exception if ambiguous. |
 | `Flysystem\FolderIdResolver` | `invalidate()` | `void`; invalidate folder mappings for the resolver's credential namespace. |
 | `Upload\PikPakOssUploader` | `upload(array $params, resource $stream, int $size)` | `void`; upload a seekable stream using the Drive API's temporary `resumable.params`; size is in bytes. |
+| `Upload\PikPakOssUploader` | `getPresignedUploadUrl(array $params, int $expiresInSeconds = 900)` | `string`; create a signed browser PUT URL for an existing upload session. |
+| `Upload\PikPakOssUploader` | `getBrowserUploadAuthorization(array $params, string $contentMd5, int $size)` | `array`; create signed PUT headers and POST form fields for browser uploads. |
 | `Upload\PikPakOssUploader` | `lastRequests()` | `array`; safe request summaries for the latest OSS upload. |
 | `PikPakWebStorageServiceProvider` | `boot()` | `void`; register the Laravel `pikpak` filesystem extension. Invoked automatically by Laravel. |
 | `Exceptions\PikPakApiException` | `__construct(string $message, ?int $httpStatus = null, ?string $apiErrorCode = null)` | Runtime exception with public readonly `httpStatus` and `apiErrorCode` properties. |
 
-Class names above are relative to `OhMyGold\PikPakWebStorage`. The HTTP client only permits HTTPS requests to `api-drive.mypikpak.com`. Low-level methods use Laravel's HTTP facade and require it to be initialized. `FolderIdResolver` expects already validated directory-name segments; ordinary applications should use the adapter's path methods.
+Class names above are relative to `OhMyGold\PikPakWebStorage`. The built-in HTTP client only permits HTTPS requests to `api-drive.mypikpak.com`. Low-level methods use Laravel's HTTP facade and require it to be initialized. `FolderIdResolver` expects already validated directory-name segments; ordinary applications should use the adapter's path methods.
 
 ```php
 use OhMyGold\PikPakWebStorage\Flysystem\FolderIdResolver;

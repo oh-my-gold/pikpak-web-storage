@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace OhMyGold\PikPakWebStorage\Flysystem;
 
 use Illuminate\Contracts\Cache\Repository;
-use OhMyGold\PikPakWebStorage\Http\PikPakApiClient;
+use OhMyGold\PikPakWebStorage\Http\PikPakApiClientContract;
 use RuntimeException;
 use Throwable;
 
@@ -19,7 +19,7 @@ final class FolderIdResolver
     private readonly string $namespace;
 
     public function __construct(
-        private readonly PikPakApiClient $client,
+        private readonly PikPakApiClientContract $client,
         private ?Repository $cache = null,
         private readonly int $ttl = 3600,
     ) {

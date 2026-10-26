@@ -8,7 +8,7 @@ use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
 use OhMyGold\PikPakWebStorage\Exceptions\PikPakApiException;
 
-final class PikPakApiClient
+final class PikPakApiClient implements PikPakApiClientContract
 {
     private const API_HOST = 'api-drive.mypikpak.com';
 
@@ -26,22 +26,39 @@ final class PikPakApiClient
         return hash('sha256', $this->token);
     }
 
-    public function get(string $url, array $query = []): array
+    public function get(string $url, array $query = [], array $extraHeaders = []): array
     {
-        return $this->request('GET', $url, $query);
+        return $this->request('GET', $url, $query, [], $extraHeaders);
     }
 
-    public function post(string $url, array $body = []): array
+    public function getWithStatus(string $url, array $query = [], array $extraHeaders = []): array
     {
-        return $this->request('POST', $url, [], $body);
+        return $this->request('GET', $url, $query, [], $extraHeaders, true);
     }
 
-    public function patch(string $url, array $body = []): array
+    public function post(string $url, array $body = [], array $extraHeaders = []): array
     {
-        return $this->request('PATCH', $url, [], $body);
+        return $this->request('POST', $url, [], $body, $extraHeaders);
     }
 
-    private function request(string $method, string $url, array $query = [], array $body = []): array
+    public function postWithStatus(string $url, array $body = [], array $extraHeaders = []): array
+    {
+        return $this->request('POST', $url, [], $body, $extraHeaders, true);
+    }
+
+    public function patch(string $url, array $body = [], array $extraHeaders = []): array
+    {
+        return $this->request('PATCH', $url, [], $body, $extraHeaders);
+    }
+
+    private function request(
+        string $method,
+        string $url,
+        array $query = [],
+        array $body = [],
+        array $extraHeaders = [],
+        bool $includeStatus = false,
+    ): array
     {
         $this->assertDriveApiUrl($url);
 
@@ -54,7 +71,7 @@ final class PikPakApiClient
             'Referer' => 'https://mypikpak.com/',
             'User-Agent' => 'Mozilla/5.0 (Linux; Android 16; Pixel 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36',
         ];
-        $request = Http::withHeaders($headers)->connectTimeout(10)->timeout(30);
+        $request = Http::withHeaders($headers + $extraHeaders)->connectTimeout(10)->timeout(30);
         $response = match ($method) {
             'GET' => $request->get($url, $query),
             'POST' => $request->post($url, $body),
@@ -73,7 +90,7 @@ final class PikPakApiClient
         }
 
         if ($response->body() === '') {
-            return [];
+            return $includeStatus ? ['data' => [], 'status' => $response->status()] : [];
         }
         if (!is_array($data)) {
             throw new PikPakApiException('PikPak Drive API returned an invalid response.', $response->status());
@@ -87,7 +104,7 @@ final class PikPakApiClient
             throw new PikPakApiException($message, $response->status(), $code);
         }
 
-        return $data;
+        return $includeStatus ? ['data' => $data, 'status' => $response->status()] : $data;
     }
 
     private function assertDriveApiUrl(string $url): void

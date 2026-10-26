@@ -122,6 +122,16 @@ $bytes = $disk->size('@id/REMOTE_FILE_ID');
 
 `getPresignedUploadUrl()` 使用应用已创建的上传会话中的 `resumable.params` 生成签名 PUT URL，并以字符串返回。它不会创建 PikPak 文件或上传会话。默认有效期为 15 分钟，可设置为 1 到 3600 秒。
 
+`getBrowserUploadAuthorization()` 适用于 UShow 当前的浏览器上传回退流程：返回带签名请求头的 PUT 请求，以及带签名表单字段的 POST 请求。参数中的 MD5 必须使用 Base64 编码，大小必须是准确字节数。此方法不会创建上传会话；会话 ID、文件 ID 和完成流程仍由应用管理。返回的授权信息应视为短时凭据。
+
+```php
+$uploadParams = $metadata['resumable']['params'];
+$md5 = base64_encode(md5($contents, true));
+$authorization = $adapter->getBrowserUploadAuthorization($uploadParams, $md5, strlen($contents));
+
+return response()->json(['upload' => $authorization]);
+```
+
 UShow 可保留现有的后端会话创建流程和 `fileId`、`sessionId` 管理，再由后端生成并返回浏览器上传 URL。如果 UShow 已注册自己的 `pikpak` 驱动，可直接实例化本包的 adapter：
 
 ```php
@@ -198,20 +208,31 @@ adapter 的写入和变更方法成功时返回 `void`，失败时抛出异常�
 | --- | --- | --- |
 | `getUrl($path)` | `string` | PikPak 当前内容链接。 |
 | `getPresignedUploadUrl($params, $expiresInSeconds = 900)` | `string` | 为已创建会话的 `resumable.params` 签名单次 PUT URL。 |
+| `getBrowserUploadAuthorization($params, $contentMd5, $size)` | `array` | 返回 UShow 浏览器上传流程所需的签名 PUT 请求和 POST 表单。 |
 | `share($path, $withPassword = false, $expirationDays = 7)` | `array` | 创建分享并返回 PikPak 分享字段。 |
 | `listShares()` | `array` | 自动分页并返回原始分享记录。 |
 | `revokeShare($shareId)` | `void` | 撤销指定分享。 |
 | `sourceFileId($path)` | `?string` | 返回路径对应文件 ID；查找失败时返回 `null`。 |
+| `getFileById($id, $query = [], $extraHeaders = [])` | `array` | 按稳定 ID 查询 Drive 文件或目录元数据。 |
+| `createUploadSession($parentId, $name, $size, $sha1)` | `array` | 创建 resumable 上传会话，返回 `data` 和 HTTP `status`。 |
+| `createFolderBelowId($parentId, $name)` | `array` | 在指定目录 ID 下创建一个子目录并返回云端记录。 |
+| `listChildren($parentId, $includeIncomplete = false)` | `array` | 自动分页读取子项；可选择包含尚未完成的上传。 |
+| `occupiedChildInFolder($parentId, $name)` | `?array` | 查找直接子项；若分页未完成而无法确认不存在，会抛出异常。 |
+| `fileIdIncludingIncomplete($path)` | `?string` | 按路径查询文件 ID，包括仍在处理中的上传；重名时抛出异常。 |
+| `filePhaseAtPath($id, $path)` | `?string` | 只有 ID 仍对应此路径时才返回文件处理阶段。 |
+| `fileIsCompleteAtPath($id, $path)` | `bool` | 检查文件是否已达到 `PHASE_TYPE_COMPLETE`。 |
 | `pathOccupied($path)` | `bool` | 检查是否有同名文件或目录，包括未完成上传。 |
 | `pathIsUniqueTo($path, $id)` | `bool` | 检查唯一同名项目是否为指定文件 ID。 |
 | `ensureFolderPathAndGetId($path)` | `string` | 创建缺失目录并返回最终目录 ID；账号根目录没有对象 ID。 |
+| `ensureFolderBelowId($parentId, $relativeDirectory)` | `string` | 在指定目录 ID 下创建多层目录并返回最终 ID。 |
 | `deleteById($id)` | `void` | 按原始 ID 删除文件或目录，行为由 `use_trash` 决定。 |
+| `permanentlyDeleteById($id)` | `void` | 校验文件 ID；必要时先移入回收站，再永久删除。不存在时视为已清理。 |
 | `lastUploadedFileId()` | `string` | 最近上传会话返回的文件元数据 ID；不代表文件字节已上传成功。 |
 | `lastUploadRequests()` | `array` | 最近上传的安全 OSS 请求摘要，不含凭据值和签名查询参数。 |
 
 `sourceFileId()` 使用 adapter 实例内的文件 ID 缓存；Laravel 文件夹缓存 TTL 不影响此缓存。`deleteById()` 接受原始 ID，因此可访问配置根目录以外的对象。`lastUploadedFileId()` 与 `lastUploadRequests()` 会在上传开始时重置。`lastUploadRequests()` 适合用于排查，不包含签名 URL 或临时凭据。
 
-直接构造 adapter 时，构造参数依次为：`PikPakApiClient $client`、`string $rootFolderId = ''`、`string $keyPrefix = ''`、`?PikPakOssUploader $uploader = null`、`string $rootFolderPath = ''`、`?Illuminate\Contracts\Cache\Repository $folderCache = null`、`int $folderCacheTtl = 3600`、`bool $useTrash = true`。`keyPrefix` 对应磁盘配置的 `path_prefix`；传入空 uploader 会使用内建 OSS uploader；空缓存会使用实例内存缓存。`PikPakApiClient` 接受 Bearer Token。
+直接构造 adapter 时，第一个参数接受 `PikPakApiClientContract`。可直接使用内建 `PikPakApiClient`；应用也可以实现此 contract，在使用包内文件系统和 Drive 方法时保留自身的凭据获取与 API 错误处理。其余构造参数依次为：`string $rootFolderId = ''`、`string $keyPrefix = ''`、`?PikPakOssUploader $uploader = null`、`string $rootFolderPath = ''`、`?Illuminate\Contracts\Cache\Repository $folderCache = null`、`int $folderCacheTtl = 3600`、`bool $useTrash = true`。
 
 ## 错误处理
 
